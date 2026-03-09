@@ -1,0 +1,8 @@
+[package]
+name = "gb"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bitflags = "2.11"
+clap = { version = "4.5", features = [ "derive" ] }
