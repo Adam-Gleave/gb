@@ -172,10 +172,10 @@ impl DstOperand8 for RegisterPtr {
 bitflags! {
     #[derive(Default, Clone, Copy)]
     pub struct Flags: u8 {
-        const Z = 0b1000_000;
-        const N = 0b0100_000;
-        const H = 0b0010_000;
-        const C = 0b0001_000;
+        const Z = 0b1000_0000;
+        const N = 0b0100_0000;
+        const H = 0b0010_0000;
+        const C = 0b0001_0000;
     }
 }
 
@@ -492,9 +492,31 @@ impl Cpu {
 }
 
 #[derive(Default)]
+pub struct Ppu {
+    vram: Memory<0x2000, 0x8000>,
+    oam: Memory<0x009F, 0xFE00>,
+} 
+
+impl Ppu {
+    fn read(&self, addr: u16) -> u8 {
+        match addr {
+            0xFE00..=0xFE9F => self.oam.read(addr),
+            _ => panic!("Tried to read from PPU-managed address {:#046}", addr),
+        }
+    }
+
+    fn write(&mut self, addr: u16, value: u8) {
+        match addr {
+            0xFE00..=0xFE9F => self.oam.write(addr, value),
+            _ => panic!("Tried to write to PPU-managed address {:#046}", addr),
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct Bus {
     cart: Cartridge,
-    vram: Memory<0x2000, 0x8000>,
+    ppu: Ppu,
     wram: Memory<0x2000, 0xC000>,
     hram: Memory<0x007E, 0xFF80>,
     io: IoRegisters,
@@ -514,12 +536,12 @@ impl Bus {
     pub fn read(&self, addr: u16) -> u8 {
         match addr {
             0x0000..=0x7FFF => self.cart.read(addr),
-            0x8000..=0x9FFF => self.vram.read(addr),
+            0x8000..=0x9FFF => self.ppu.read(addr),
             0xC000..=0xDFFF => self.wram.read(addr),
             0xE000..=0xFDFF => self.wram.read(addr - 0x2000),
             0xFF00..=0xFF7F => self.io.read(addr),
             0xFF80..=0xFFFE => self.hram.read(addr),
-            0xFFFF => self.ier.read(addr),
+            0xFFFF => self.ier.get(),
             _ => panic!("Tried to read from address {:#06X}", addr),
         }
     }
@@ -527,12 +549,12 @@ impl Bus {
     pub fn write(&mut self, addr: u16, value: u8) {
         match addr {
             0x0000..=0x7FFF => self.cart.write(addr, value),
-            0x8000..=0x9FFF => self.vram.write(addr, value),
+            0x8000..=0x9FFF => self.ppu.write(addr, value),
             0xC000..=0xDFFF => self.wram.write(addr, value),
             0xE000..=0xFDFF => self.wram.write(addr - 0x2000, value),
             0xFF80..=0xFFFE => self.hram.write(addr, value),
             0xFF00..=0xFF7F => self.io.write(addr, value),
-            0xFFFF => self.ier.write(addr, value),
+            0xFFFF => self.ier.set(value),
             _ => panic!("Tried to write to address {:#046}", addr),
         }
     }
@@ -571,23 +593,74 @@ impl Cartridge {
     }
 }
 
+bitflags! {
+    #[derive(Default, Clone, Copy)]
+    pub struct Stat: u8 {
+        const COMPARE_INT  = 0b0100_0000;
+        const MODE_2_INT   = 0b0010_0000;
+        const MODE_1_INT   = 0b0001_0000;
+        const MODE_0_INT   = 0b0000_1000;
+        const COMPARE_FLAG = 0b0000_0100;
+        const PPU_MODE_H   = 0b0000_0010;
+        const PPU_MODE_L   = 0b0000_0001;
+    }
+}
+
+bitflags! {
+    #[derive(Default, Clone, Copy)]
+    pub struct LcdControl: u8 {
+        const LCD_PPU_ENABLE   = 0b1000_0000;
+        const WINDOW_TILE_MAP  = 0b0100_0000;
+        const WINDOW_ENABLE    = 0b0010_0000;
+        const BG_WINDOW_TILES  = 0b0001_0000;
+        const BG_TILE_MAP      = 0b0000_1000;
+        const OBJ_SIZE         = 0b0000_0100;
+        const OBJ_ENABLE       = 0b0000_0010;
+        const BG_WINDOW_ENABLE = 0b0000_0001;
+    }
+}
+
 #[derive(Default)]
 pub struct IoRegisters {
-    ifr: Memory<0x01, 0xFF0F>,
+    pub srd:  Memory<0x01, 0xFF01>,
+    pub srt:  Memory<0x01, 0xFF02>,
+    pub ifr:  Memory<0x01, 0xFF0F>,
+    pub lcdc: Memory<0x01, 0xFF40>,
+    pub stat: Memory<0x01, 0xFF41>,
+    pub scy:  Memory<0x01, 0xFF42>,
+    pub scx:  Memory<0x01, 0xFF43>,
+    pub ly:   Memory<0x01, 0xFF44>,
+    pub lyc:  Memory<0x01, 0xFF45>,
 }
 
 impl IoRegisters {
     pub fn read(&self, addr: u16) -> u8 {
         match addr {
-            0xFF0F => self.ifr.read(addr),
-            _ => panic!("Tried to read IO register at address {:#046}", addr),
+            0xFF01 => self.srd.get(),
+            0xFF02 => self.srt.get(),
+            0xFF0F => self.ifr.get(),
+            0xFF40 => self.lcdc.get(),
+            0xFF41 => self.stat.get(),
+            0xFF42 => self.scy.get(),
+            0xFF43 => self.scx.get(),
+            0xFF44 => self.ly.get(),
+            0xFF45 => self.lyc.get(),
+            _ => panic!("Tried to read IO register at address {:#06X}", addr),
         }
     }
     
     pub fn write(&mut self, addr: u16, value: u8) {
         match addr {
-            0xFF0F => self.ifr.write(addr, value),
-            _ => panic!("Tried to write to IO register at address {:#046}", addr),
+            0xFF01 => self.srd.set(value),
+            0xFF02 => self.srt.set(value),
+            0xFF0F => self.ifr.set(value),
+            0xFF40 => self.lcdc.set(value),
+            0xFF41 => self.stat.set(value),
+            0xFF42 => self.scy.set(value),
+            0xFF43 => self.scx.set(value),
+            0xFF44 => self.ly.set(value),
+            0xFF45 => self.lyc.set(value),
+            _ => panic!("Tried to write to IO register at address {:#06X} [{:#04X} {:#010b}]", addr, value, value),
         }
     }
 }
@@ -621,6 +694,16 @@ impl<const SIZE: usize, const OFFSET: u16> Memory<SIZE, OFFSET> {
 
     fn map_addr(addr: u16) -> u16 {
         addr - OFFSET
+    }
+}
+
+impl<const OFFSET: u16> Memory<1, OFFSET> {
+    pub fn get(&self) -> u8 {
+        self.data[0]
+    }
+
+    pub fn set(&mut self, value: u8) {
+        self.data[0] = value;
     }
 }
 
