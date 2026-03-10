@@ -69,6 +69,7 @@ enum RegisterPair {
     BC,
     DE,
     HL,
+    SP,
 }
 
 impl SrcOperand16 for RegisterPair {
@@ -78,6 +79,7 @@ impl SrcOperand16 for RegisterPair {
             Self::BC => Cpu::load_r16(cpu.b, cpu.c),
             Self::DE => Cpu::load_r16(cpu.d, cpu.e),
             Self::HL => Cpu::load_r16(cpu.h, cpu.l),
+            Self::SP => cpu.sp,
         }
     }
 }
@@ -93,6 +95,7 @@ impl DstOperand16 for RegisterPair {
             Self::BC => Cpu::store_r16(&mut cpu.b, &mut cpu.c, value),
             Self::DE => Cpu::store_r16(&mut cpu.d, &mut cpu.e, value),
             Self::HL => Cpu::store_r16(&mut cpu.h, &mut cpu.l, value),
+            Self::SP => cpu.sp = value,
         }
     }
 }
@@ -225,14 +228,104 @@ impl Cpu {
     pub fn decode_execute(&mut self) {
         match self.opcode {
             0x00 => self.noop(),
-            0x05 => self.dec_b(),
+            0x03 => self.inc_16(RegisterPair::BC),
+            0x04 => self.inc_8(Register::B),
+            0x05 => self.dec_8(Register::B),
             0x06 => self.load_8_8(Register::B, Imm8),
-            0x0D => self.dec_c(),
+            0x0B => self.dec_16(RegisterPair::BC),
+            0x0C => self.inc_8(Register::C),
+            0x0D => self.dec_8(Register::C),
             0x0E => self.load_8_8(Register::C, Imm8),
+            0x13 => self.inc_16(RegisterPair::DE),
+            0x14 => self.inc_8(Register::D),
+            0x15 => self.dec_8(Register::D),
+            0x16 => self.load_8_8(Register::D, Imm8),
+            0x1B => self.dec_16(RegisterPair::DE),
+            0x1C => self.inc_8(Register::E),
+            0x1D => self.dec_8(Register::E),
             0x20 => self.jr_nz(),
             0x21 => self.load_16_16(RegisterPair::HL, Imm16),
+            0x22 => self.load_8_8(RegisterPtr::HLI, Register::A),
+            0x23 => self.inc_16(RegisterPair::HL),
+            0x24 => self.inc_8(Register::H),
+            0x25 => self.dec_8(Register::H),
+            0x26 => self.load_8_8(Register::H, Imm8),
+            0x2B => self.dec_16(RegisterPair::HL),
+            0x2C => self.inc_8(Register::L),
+            0x2D => self.dec_8(Register::L),
             0x32 => self.load_8_8(RegisterPtr::HLD, Register::A),
+            0x33 => self.inc_16(RegisterPair::SP),
+            0x34 => self.inc_8(RegisterPtr::HL),
+            0x35 => self.dec_8(RegisterPtr::HL),
+            0x36 => self.load_8_8(RegisterPtr::HL, Imm8),
+            0x3B => self.dec_16(RegisterPair::SP),
+            0x3C => self.inc_8(Register::A),
+            0x3D => self.dec_8(Register::A),
             0x3E => self.load_8_8(Register::A, Imm8),
+            0x40 => self.load_8_8(Register::B, Register::B),
+            0x41 => self.load_8_8(Register::B, Register::C),
+            0x42 => self.load_8_8(Register::B, Register::D),
+            0x43 => self.load_8_8(Register::B, Register::E),
+            0x44 => self.load_8_8(Register::B, Register::H),
+            0x45 => self.load_8_8(Register::B, Register::L),
+            0x46 => self.load_8_8(Register::B, RegisterPtr::HL),
+            0x47 => self.load_8_8(Register::B, Register::A),
+            0x48 => self.load_8_8(Register::C, Register::B),
+            0x49 => self.load_8_8(Register::C, Register::C),
+            0x4A => self.load_8_8(Register::C, Register::D),
+            0x4B => self.load_8_8(Register::C, Register::E),
+            0x4C => self.load_8_8(Register::C, Register::H),
+            0x4D => self.load_8_8(Register::C, Register::L),
+            0x4E => self.load_8_8(Register::C, RegisterPtr::HL),
+            0x4F => self.load_8_8(Register::C, Register::A),
+            0x50 => self.load_8_8(Register::D, Register::B),
+            0x51 => self.load_8_8(Register::D, Register::C),
+            0x52 => self.load_8_8(Register::D, Register::D),
+            0x53 => self.load_8_8(Register::D, Register::E),
+            0x54 => self.load_8_8(Register::D, Register::H),
+            0x55 => self.load_8_8(Register::D, Register::L),
+            0x56 => self.load_8_8(Register::D, RegisterPtr::HL),
+            0x57 => self.load_8_8(Register::D, Register::A),
+            0x58 => self.load_8_8(Register::E, Register::B),
+            0x59 => self.load_8_8(Register::E, Register::C),
+            0x5A => self.load_8_8(Register::E, Register::D),
+            0x5B => self.load_8_8(Register::E, Register::E),
+            0x5C => self.load_8_8(Register::E, Register::H),
+            0x5D => self.load_8_8(Register::E, Register::L),
+            0x5E => self.load_8_8(Register::E, RegisterPtr::HL),
+            0x5F => self.load_8_8(Register::E, Register::A),
+            0x60 => self.load_8_8(Register::H, Register::B),
+            0x61 => self.load_8_8(Register::H, Register::C),
+            0x62 => self.load_8_8(Register::H, Register::D),
+            0x63 => self.load_8_8(Register::H, Register::E),
+            0x64 => self.load_8_8(Register::H, Register::H),
+            0x65 => self.load_8_8(Register::H, Register::L),
+            0x66 => self.load_8_8(Register::H, RegisterPtr::HL),
+            0x67 => self.load_8_8(Register::H, Register::A),
+            0x68 => self.load_8_8(Register::L, Register::B),
+            0x69 => self.load_8_8(Register::L, Register::C),
+            0x6A => self.load_8_8(Register::L, Register::D),
+            0x6B => self.load_8_8(Register::L, Register::E),
+            0x6C => self.load_8_8(Register::L, Register::H),
+            0x6D => self.load_8_8(Register::L, Register::L),
+            0x6E => self.load_8_8(Register::L, RegisterPtr::HL),
+            0x6F => self.load_8_8(Register::L, Register::A),
+            0x70 => self.load_8_8(RegisterPtr::HL, Register::B),
+            0x71 => self.load_8_8(RegisterPtr::HL, Register::C),
+            0x72 => self.load_8_8(RegisterPtr::HL, Register::D),
+            0x73 => self.load_8_8(RegisterPtr::HL, Register::E),
+            0x74 => self.load_8_8(RegisterPtr::HL, Register::H),
+            0x75 => self.load_8_8(RegisterPtr::HL, Register::L),
+            0x76 => self.halt(),
+            0x77 => self.load_8_8(RegisterPtr::HL, Register::A),
+            0x78 => self.load_8_8(Register::A, Register::B),
+            0x79 => self.load_8_8(Register::A, Register::C),
+            0x7A => self.load_8_8(Register::A, Register::D),
+            0x7B => self.load_8_8(Register::A, Register::E),
+            0x7C => self.load_8_8(Register::A, Register::H),
+            0x7D => self.load_8_8(Register::A, Register::L),
+            0x7E => self.load_8_8(Register::A, RegisterPtr::HL),
+            0x7F => self.load_8_8(Register::A, Register::A),
             0xA8 => self.xor(Register::B),
             0xA9 => self.xor(Register::C),
             0xAA => self.xor(Register::D),
@@ -277,9 +370,25 @@ impl Cpu {
         self.write_cycle(addr_hi, value);
     }
 
+    fn fetch_imm8(&mut self) -> u8 {
+        let value = self.read_cycle(self.pc.get());
+        self.pc.inc();
+        value
+    }
+
+    fn fetch_imm16(&mut self) -> u16 {
+        let lo = self.fetch_imm8();
+        let hi = self.fetch_imm8();
+        u16::from_le_bytes([lo, hi])
+    }
+
     fn noop(&mut self) {
         self.prefetch(self.pc.get());
     }
+
+    fn halt(&mut self) -> ! {
+        loop {}
+    } 
 
     fn load_8_8<Dst: DstOperand8, Src: SrcOperand8>(&mut self, dst: Dst, src: Src) {
         let value = src.read(self);
@@ -293,21 +402,39 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
-    fn dec_b(&mut self) {
-        let value = self.b.wrapping_sub(1);
-        self.b = value;
+    fn dec_8<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
+        let value = operand.read(self);
+        let value = value.wrapping_sub(1);
+        operand.write(self, value);
         self.try_set_z(value);
         self.f.set(Flags::N, true);
         self.f.set(Flags::H, value & 0xF == 0);
         self.prefetch(self.pc.get());
     }
 
-    fn dec_c(&mut self) {
-        let value = self.c.wrapping_sub(1);
-        self.c = value;
+    fn dec_16<O: SrcOperand16 + DstOperand16>(&mut self, operand: O) {
+        let value = operand.read(self);
+        let value = value.wrapping_sub(1);
+        operand.write(self, value);
+        self.cycle();
+        self.prefetch(self.pc.get());
+    }
+
+    fn inc_8<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
+        let value = operand.read(self);
+        let value = value.wrapping_add(1);
+        operand.write(self, value);
         self.try_set_z(value);
         self.f.set(Flags::N, true);
-        self.f.set(Flags::H, value & 0xF == 0);
+        self.f.set(Flags::H, value & 0xF == 0xF);
+        self.prefetch(self.pc.get());
+    }
+
+    fn inc_16<O: SrcOperand16 + DstOperand16>(&mut self, operand: O) {
+        let value = operand.read(self);
+        let value = value.wrapping_add(1);
+        operand.write(self, value);
+        self.cycle();
         self.prefetch(self.pc.get());
     }
 
@@ -336,18 +463,6 @@ impl Cpu {
     fn di(&mut self) {
         self.ime = false;
         self.prefetch(self.pc.get());
-    }
-
-    fn fetch_imm16(&mut self) -> u16 {
-        let lo = self.fetch_imm8();
-        let hi = self.fetch_imm8();
-        u16::from_le_bytes([lo, hi])
-    }
-
-    fn fetch_imm8(&mut self) -> u8 {
-        let value = self.read_cycle(self.pc.get());
-        self.pc.inc();
-        value
     }
 
     fn do_jr(&mut self, offset: u8) {
