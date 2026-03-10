@@ -5,6 +5,167 @@ use std::io::BufReader;
 use bitflags::bitflags;
 use clap::Parser;
 
+trait SrcOperand8 {
+    fn read(&self, cpu: &mut Cpu) -> u8;
+}
+
+trait DstOperand8 {
+    fn write(&self, cpu: &mut Cpu, value: u8);
+}
+
+trait SrcOperand16 {
+    fn read(&self, cpu: &mut Cpu) -> u16;
+}
+
+trait DstOperand16 {
+    fn write(&self, cpu: &mut Cpu, value: u16);
+}
+
+#[derive(Clone, Copy)]
+enum Register {
+    A,
+    F,
+    B,
+    C,
+    D,
+    E,
+    H,
+    L,
+}
+
+impl SrcOperand8 for Register {
+    fn read(&self, cpu: &mut Cpu) -> u8 {
+        match self {
+            Self::A => cpu.a,
+            Self::F => cpu.f.bits(),
+            Self::B => cpu.b,
+            Self::C => cpu.c,
+            Self::D => cpu.d,
+            Self::E => cpu.e,
+            Self::H => cpu.h,
+            Self::L => cpu.l,
+        }
+    }
+}
+
+impl DstOperand8 for Register {
+    fn write(&self, cpu: &mut Cpu, value: u8) {
+        match self {
+            Self::A => cpu.a = value,
+            Self::F => cpu.f = Flags::from_bits_truncate(value),
+            Self::B => cpu.b = value,
+            Self::C => cpu.c = value,
+            Self::D => cpu.d = value,
+            Self::E => cpu.e = value,
+            Self::H => cpu.h = value,
+            Self::L => cpu.l = value,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RegisterPair {
+    AF,
+    BC,
+    DE,
+    HL,
+}
+
+impl SrcOperand16 for RegisterPair {
+    fn read(&self, cpu: &mut Cpu) -> u16 {
+        match self {
+            Self::AF => Cpu::load_r16(cpu.a, cpu.f.bits()),
+            Self::BC => Cpu::load_r16(cpu.b, cpu.c),
+            Self::DE => Cpu::load_r16(cpu.d, cpu.e),
+            Self::HL => Cpu::load_r16(cpu.h, cpu.l),
+        }
+    }
+}
+
+impl DstOperand16 for RegisterPair {
+    fn write(&self, cpu: &mut Cpu, value: u16) {
+        match self {
+            Self::AF => {
+                let mut f = 0;
+                Cpu::store_r16(&mut cpu.a, &mut f, value);
+                cpu.f = Flags::from_bits_truncate(f);
+            }
+            Self::BC => Cpu::store_r16(&mut cpu.b, &mut cpu.c, value),
+            Self::DE => Cpu::store_r16(&mut cpu.d, &mut cpu.e, value),
+            Self::HL => Cpu::store_r16(&mut cpu.h, &mut cpu.l, value),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Imm8;
+
+impl SrcOperand8 for Imm8 {
+    fn read(&self, cpu: &mut Cpu) -> u8 {
+        cpu.fetch_imm8()
+    }
+}
+
+impl DstOperand8 for Imm8 {
+    fn write(&self, cpu: &mut Cpu, value: u8) {
+        let addr_offset = cpu.fetch_imm8();
+        cpu.write_cycle_hi(addr_offset, value);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Imm16;
+
+impl SrcOperand16 for Imm16 {
+    fn read(&self, cpu: &mut Cpu) -> u16 {
+        cpu.fetch_imm16()
+    }
+}
+
+impl DstOperand16 for Imm16 {
+    fn write(&self, cpu: &mut Cpu, value: u16) {
+        let addr = cpu.fetch_imm16();
+        let [value_lo, value_hi] = value.to_le_bytes();
+        cpu.write_cycle(addr, value_lo);
+        let addr = addr.wrapping_add(1);
+        cpu.write_cycle(addr, value_hi);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RegisterPtr {
+    HL,
+    HLD,
+    HLI,
+}
+
+impl SrcOperand8 for RegisterPtr {
+    fn read(&self, cpu: &mut Cpu) -> u8 {
+        let addr = Cpu::load_r16(cpu.h, cpu.l);
+        let value = cpu.read_cycle(addr);        
+        let addr = match self {
+            Self::HL => addr,
+            Self::HLD => addr.wrapping_sub(addr),
+            Self::HLI => addr.wrapping_add(addr),
+        };
+        Cpu::store_r16(&mut cpu.h, &mut cpu.l, addr);
+        value
+    }
+}
+
+impl DstOperand8 for RegisterPtr {
+    fn write(&self, cpu: &mut Cpu, value: u8) {
+        let addr = Cpu::load_r16(cpu.h, cpu.l);
+        cpu.write_cycle(addr, value);
+        let addr = match self {
+            Self::HL => addr,
+            Self::HLD => addr.wrapping_sub(addr),
+            Self::HLI => addr.wrapping_add(addr),
+        };
+        Cpu::store_r16(&mut cpu.h, &mut cpu.l, addr);
+    }
+}
+
 bitflags! {
     #[derive(Default, Clone, Copy)]
     pub struct Flags: u8 {
@@ -65,16 +226,23 @@ impl Cpu {
         match self.opcode {
             0x00 => self.noop(),
             0x05 => self.dec_b(),
-            0x06 => self.ld_b_imm8(),
+            0x06 => self.load_8_8(Register::B, Imm8),
             0x0D => self.dec_c(),
-            0x0E => self.ld_c_imm8(),
+            0x0E => self.load_8_8(Register::C, Imm8),
             0x20 => self.jr_nz(),
-            0x21 => self.ld_hl_imm16(),
-            0x32 => self.ld_hld_a(),
-            0x3E => self.ld_a_imm8(),
-            0xAF => self.xor_a_a(),
+            0x21 => self.load_16_16(RegisterPair::HL, Imm16),
+            0x32 => self.load_8_8(RegisterPtr::HLD, Register::A),
+            0x3E => self.load_8_8(Register::A, Imm8),
+            0xA8 => self.xor(Register::B),
+            0xA9 => self.xor(Register::C),
+            0xAA => self.xor(Register::D),
+            0xAB => self.xor(Register::E),
+            0xAC => self.xor(Register::H),
+            0xAD => self.xor(Register::L),
+            // 0xAE
+            0xAF => self.xor(Register::A),
             0xC3 => self.jp(),
-            0xE0 => self.ldh_a8_a(),
+            0xE0 => self.load_8_8(Imm8, Register::A),
             0xF3 => self.di(),
             _ => panic!("Unexpected opcode {:#04X}", self.opcode),
         }
@@ -113,18 +281,24 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
+    fn load_8_8<Dst: DstOperand8, Src: SrcOperand8>(&mut self, dst: Dst, src: Src) {
+        let value = src.read(self);
+        dst.write(self, value);
+        self.prefetch(self.pc.get());
+    }
+
+    fn load_16_16<Dst: DstOperand16, Src: SrcOperand16>(&mut self, dst: Dst, src: Src) {
+        let value = src.read(self);
+        dst.write(self, value);
+        self.prefetch(self.pc.get());
+    }
+
     fn dec_b(&mut self) {
         let value = self.b.wrapping_sub(1);
         self.b = value;
         self.try_set_z(value);
         self.f.set(Flags::N, true);
         self.f.set(Flags::H, value & 0xF == 0);
-        self.prefetch(self.pc.get());
-    }
-
-    fn ld_b_imm8(&mut self) {
-        let value = self.fetch_imm8();
-        self.b = value;
         self.prefetch(self.pc.get());
     }
 
@@ -137,12 +311,6 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
-    fn ld_c_imm8(&mut self) {
-        let value = self.fetch_imm8();
-        self.c = value;
-        self.prefetch(self.pc.get());
-    }
-
     fn jr_nz(&mut self) {
         let offset = self.fetch_imm8();
         if self.f.contains(Flags::Z) {
@@ -151,39 +319,17 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
-    fn ld_hl_imm16(&mut self) {
-        let value = self.fetch_imm16();
-        Self::store_r16(&mut self.h, &mut self.l, value);
-        self.prefetch(self.pc.get());
-    }
-
-    fn ld_hld_a(&mut self) {
-        let addr = Self::load_r16(self.h, self.l);
-        let value = self.bus.read(addr);
+    fn xor<O: SrcOperand8>(&mut self, operand: O) {
+        let operand = operand.read(self);
+        let value = self.a ^ operand;
         self.a = value;
-        self.prefetch(self.pc.get());
-    }
-
-    fn ld_a_imm8(&mut self) {
-        let value = self.fetch_imm8();
-        self.a = value;
-        self.prefetch(self.pc.get());
-    }
-
-    fn xor_a_a(&mut self) {
-        self.a ^= self.a;
+        self.try_set_z(value);
         self.prefetch(self.pc.get());
     }
 
     fn jp(&mut self) {
         let addr = self.fetch_imm16();
         self.do_jp(addr);
-        self.prefetch(self.pc.get());
-    }
-
-    fn ldh_a8_a(&mut self) {
-        let addr = self.fetch_imm8();
-        self.write_cycle_hi(addr, self.a);
         self.prefetch(self.pc.get());
     }
 
