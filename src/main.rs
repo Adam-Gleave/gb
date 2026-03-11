@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::fs::{File, read};
 use std::io;
 use std::io::BufReader;
 
@@ -109,13 +109,6 @@ impl SrcOperand8 for Imm8 {
     }
 }
 
-impl DstOperand8 for Imm8 {
-    fn write(&self, cpu: &mut Cpu, value: u8) {
-        let addr_offset = cpu.fetch_imm8();
-        cpu.write_cycle_hi(addr_offset, value);
-    }
-}
-
 #[derive(Clone, Copy)]
 struct Imm16;
 
@@ -125,13 +118,46 @@ impl SrcOperand16 for Imm16 {
     }
 }
 
-impl DstOperand16 for Imm16 {
-    fn write(&self, cpu: &mut Cpu, value: u16) {
+#[derive(Clone, Copy)]
+struct Ind8;
+
+impl SrcOperand8 for Ind8 {
+    fn read(&self, cpu: &mut Cpu) -> u8 {
+        let addr_offset = cpu.fetch_imm8();
+        cpu.read_cycle_hi(addr_offset)
+    }
+}
+
+impl DstOperand8 for Ind8 {
+    fn write(&self, cpu: &mut Cpu, value: u8) {
+        let addr_offset = cpu.fetch_imm8();
+        cpu.write_cycle_hi(addr_offset, value);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Ind16;
+
+impl SrcOperand8 for Ind16 {
+    fn read(&self, cpu: &mut Cpu) -> u8 {
         let addr = cpu.fetch_imm16();
-        let [value_lo, value_hi] = value.to_le_bytes();
-        cpu.write_cycle(addr, value_lo);
-        let addr = addr.wrapping_add(1);
-        cpu.write_cycle(addr, value_hi);
+        cpu.read_cycle(addr)
+    }
+}
+
+impl DstOperand8 for Ind16 {
+    fn write(&self, cpu: &mut Cpu, value: u8) {
+        let addr = cpu.fetch_imm16();
+        cpu.write_cycle(addr, value);
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Addr16;
+
+impl SrcOperand16 for Addr16 {
+    fn read(&self, cpu: &mut Cpu) -> u16 {
+        cpu.fetch_imm16()
     }
 }
 
@@ -335,8 +361,10 @@ impl Cpu {
             // 0xAE
             0xAF => self.xor(Register::A),
             0xC3 => self.jp(),
-            0xE0 => self.load_8_8(Imm8, Register::A),
+            0xE0 => self.load_8_8(Ind8, Register::A),
+            0xF0 => self.load_8_8(Register::A, Ind8),
             0xF3 => self.di(),
+            0xFE => self.cp(Register::A, Imm8),
             _ => panic!("Unexpected opcode {:#04X}", self.opcode),
         }
     }
@@ -404,11 +432,11 @@ impl Cpu {
 
     fn dec_8<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
         let value = operand.read(self);
-        let value = value.wrapping_sub(1);
-        operand.write(self, value);
-        self.try_set_z(value);
+        let result = value.wrapping_sub(1);
+        self.try_set_z(result);
         self.f.set(Flags::N, true);
         self.f.set(Flags::H, value & 0xF == 0);
+        operand.write(self, result);
         self.prefetch(self.pc.get());
     }
 
@@ -422,11 +450,11 @@ impl Cpu {
 
     fn inc_8<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
         let value = operand.read(self);
-        let value = value.wrapping_add(1);
-        operand.write(self, value);
-        self.try_set_z(value);
+        let result = value.wrapping_add(1);
+        self.try_set_z(result);
         self.f.set(Flags::N, true);
         self.f.set(Flags::H, value & 0xF == 0xF);
+        operand.write(self, result);
         self.prefetch(self.pc.get());
     }
 
@@ -440,8 +468,8 @@ impl Cpu {
 
     fn jr_nz(&mut self) {
         let offset = self.fetch_imm8();
-        if self.f.contains(Flags::Z) {
-            self.do_jr(offset);
+        if !self.f.contains(Flags::Z) {
+            self.do_jr(offset as i8);
         }
         self.prefetch(self.pc.get());
     }
@@ -451,6 +479,9 @@ impl Cpu {
         let value = self.a ^ operand;
         self.a = value;
         self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, false);
         self.prefetch(self.pc.get());
     }
 
@@ -465,7 +496,18 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
-    fn do_jr(&mut self, offset: u8) {
+    fn cp<A: SrcOperand8, B: SrcOperand8>(&mut self, a: A, b: B) {
+        let a_value = a.read(self);
+        let b_value = b.read(self);
+        let value = b_value.wrapping_sub(a_value);
+        self.try_set_z(value);
+        self.f.set(Flags::N, true);
+        self.f.set(Flags::H, (a_value & 0xF) < (b_value & 0xF));
+        self.f.set(Flags::C, a_value < b_value);
+        self.prefetch(self.pc.get());
+    }
+
+    fn do_jr(&mut self, offset: i8) {
         let addr = self.pc.get().wrapping_add(offset as u16);
         self.pc.set(addr);
         self.cycle();
