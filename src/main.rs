@@ -427,20 +427,41 @@ impl Cpu {
             0xBE => self.cp(Register::A, RegisterPtr::HL),
             0xBF => self.cp(Register::A, Register::A),
             0xC3 => self.jp(),
-            0xCD => self.call_16(Addr16),
             0xC9 => self.ret(),
+            0xCB => self.cb(),
+            0xCD => self.call_16(Addr16),
+            0xCF => self.rst(0x08),
+            0xDF => self.rst(0x18),
             0xE0 => self.load_8_8(Ind8, Register::A),
             0xE2 => self.load_8_8(RegisterPtr::C, Register::A),
             0xE6 => self.and(Imm8),
             0xEA => self.load_8_8(Ind16, Register::A),
             0xEE => self.xor(Imm8),
+            0xEF => self.rst(0x28),
             0xF0 => self.load_8_8(Register::A, Ind8),
             0xF2 => self.load_8_8(Register::A, RegisterPtr::C),
             0xF3 => self.di(),
             0xF6 => self.or(Imm8),
             0xFB => self.ei(),
             0xFE => self.cp(Register::A, Imm8),
+            0xFF => self.rst(0x38),
             _ => panic!("Unexpected opcode {:#04X}", self.opcode),
+        }
+    }
+
+    fn prefixed_decode_execute(&mut self) {
+        print!("\nOpcode: $CB{:#04X}", self.opcode);
+
+        match self.opcode {
+            0x30 => self.swap(Register::B),
+            0x31 => self.swap(Register::C),
+            0x32 => self.swap(Register::D),
+            0x33 => self.swap(Register::E),
+            0x34 => self.swap(Register::H),
+            0x35 => self.swap(Register::L),
+            0x36 => self.swap(RegisterPtr::HL),
+            0x37 => self.swap(Register::A),
+            _ => panic!("Unexpected prefixed opcode $CB {:#04X}", self.opcode),
         }
     }
 
@@ -597,6 +618,16 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
+    fn rst(&mut self, vector: u16) {
+        self.do_call(vector);
+        self.prefetch(self.pc.get());
+    }
+
+    fn cb(&mut self) {
+        self.prefetch(self.pc.get());
+        self.prefixed_decode_execute();
+    }
+
     fn call_16<O: SrcOperand16>(&mut self, operand: O) {
         let addr = operand.read(self);
         self.do_call(addr);
@@ -627,6 +658,19 @@ impl Cpu {
         self.f.set(Flags::N, true);
         self.f.set(Flags::H, (a_value & 0xF) < (b_value & 0xF));
         self.f.set(Flags::C, a_value < b_value);
+        self.prefetch(self.pc.get());
+    }
+
+    fn swap<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
+        let value = operand.read(self);
+        let lo4 = value & 0x0F;
+        let hi4 = value & 0xF0;
+        let value = (lo4 << 4) | (hi4 >> 4);
+        operand.write(self, value);
+        self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, false);
         self.prefetch(self.pc.get());
     }
 
