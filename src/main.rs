@@ -399,16 +399,26 @@ impl Cpu {
             0xAB => self.xor(Register::E),
             0xAC => self.xor(Register::H),
             0xAD => self.xor(Register::L),
-            // 0xAE
+            0xAE => self.xor(RegisterPtr::HL),
             0xAF => self.xor(Register::A),
+            0xB0 => self.or(Register::B),
+            0xB1 => self.or(Register::C),
+            0xB2 => self.or(Register::D),
+            0xB3 => self.or(Register::E),
+            0xB4 => self.or(Register::H),
+            0xB5 => self.or(Register::L),
+            0xB6 => self.or(RegisterPtr::HL),
+            0xB7 => self.or(Register::A),
             0xC3 => self.jp(),
             0xCD => self.call_16(Addr16),
             0xE0 => self.load_8_8(Ind8, Register::A),
             0xE2 => self.load_8_8(RegisterPtr::C, Register::A),
             0xEA => self.load_8_8(Ind16, Register::A),
+            0xEE => self.xor(Imm8),
             0xF0 => self.load_8_8(Register::A, Ind8),
             0xF2 => self.load_8_8(Register::A, RegisterPtr::C),
             0xF3 => self.di(),
+            0xF6 => self.or(Imm8),
             0xFE => self.cp(Register::A, Imm8),
             _ => panic!("Unexpected opcode {:#04X}", self.opcode),
         }
@@ -527,6 +537,16 @@ impl Cpu {
         let value = self.a ^ operand;
         self.a = value;
         self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, false);
+        self.prefetch(self.pc.get());
+    }
+
+    fn or<O: SrcOperand8>(&mut self, operand: O) {
+        let operand = operand.read(self);
+        let value = self.a | operand;
+        self.a = value;
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, false);
