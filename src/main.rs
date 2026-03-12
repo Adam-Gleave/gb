@@ -252,6 +252,8 @@ impl Cpu {
     }
 
     pub fn decode_execute(&mut self) {
+        print!("\nOpcode: {:#04X}", self.opcode);
+
         match self.opcode {
             0x00 => self.noop(),
             0x03 => self.inc_16(RegisterPair::BC),
@@ -279,6 +281,7 @@ impl Cpu {
             0x2B => self.dec_16(RegisterPair::HL),
             0x2C => self.inc_8(Register::L),
             0x2D => self.dec_8(Register::L),
+            0x31 => self.load_16_16(RegisterPair::SP, Imm16),
             0x32 => self.load_8_8(RegisterPtr::HLD, Register::A),
             0x33 => self.inc_16(RegisterPair::SP),
             0x34 => self.inc_8(RegisterPtr::HL),
@@ -362,6 +365,7 @@ impl Cpu {
             0xAF => self.xor(Register::A),
             0xC3 => self.jp(),
             0xE0 => self.load_8_8(Ind8, Register::A),
+            0xEA => self.load_8_8(Ind16, Register::A),
             0xF0 => self.load_8_8(Register::A, Ind8),
             0xF3 => self.di(),
             0xFE => self.cp(Register::A, Imm8),
@@ -375,10 +379,12 @@ impl Cpu {
     }
 
     fn cycle(&mut self) {
+        self.bus.sync();
         self.cycles = self.cycles.wrapping_add(1);
     }
 
     fn read_cycle(&mut self, addr: u16) -> u8 {
+        self.bus.sync();
         self.cycles = self.cycles.wrapping_add(1);
         self.bus.read(addr)
     }
@@ -389,6 +395,7 @@ impl Cpu {
     }
 
     fn write_cycle(&mut self, addr: u16, value: u8) {
+        self.bus.sync();
         self.cycles = self.cycles.wrapping_add(1);
         self.bus.write(addr, value);
     }
@@ -499,6 +506,7 @@ impl Cpu {
     fn cp<A: SrcOperand8, B: SrcOperand8>(&mut self, a: A, b: B) {
         let a_value = a.read(self);
         let b_value = b.read(self);
+        print!(" CP {}, {}", a_value, b_value);
         let value = b_value.wrapping_sub(a_value);
         self.try_set_z(value);
         self.f.set(Flags::N, true);
@@ -533,25 +541,107 @@ impl Cpu {
     }
 }
 
+pub struct PpuBus<'a> {
+    io: &'a mut IoRegisters,
+}
+
 #[derive(Default)]
 pub struct Ppu {
+    mode: u8,
+    dots: u16,
     vram: Memory<0x2000, 0x8000>,
     oam: Memory<0x009F, 0xFE00>,
 } 
 
 impl Ppu {
-    fn read(&self, addr: u16) -> u8 {
+    pub fn read(&self, addr: u16) -> u8 {
         match addr {
-            0xFE00..=0xFE9F => self.oam.read(addr),
+            0x8000..=0x9FFF if self.mode != 3 => self.vram.read(addr),
+            0xFE00..=0xFE9F if self.mode <= 1 => self.oam.read(addr),
             _ => panic!("Tried to read from PPU-managed address {:#046}", addr),
         }
     }
 
-    fn write(&mut self, addr: u16, value: u8) {
+    pub fn write(&mut self, addr: u16, value: u8) {
         match addr {
-            0xFE00..=0xFE9F => self.oam.write(addr, value),
-            _ => panic!("Tried to write to PPU-managed address {:#046}", addr),
+            0x8000..=0x9FFF if self.mode != 3 => self.vram.write(addr, value),
+            0xFE00..=0xFE9F if self.mode <= 1 => self.oam.write(addr, value),
+            _ => panic!("Tried to write to PPU-managed address {:#046} in mode {}", addr, self.mode),
         }
+    }
+
+    const DOT_CYCLES: usize = 4;
+    const SCANLINE_DOTS: u16 = 456;
+    const M2_DOTS: u16 = 80;
+    const M3_DOTS: u16 = 172;
+    const M0_DOTS: u16 = 376 - Self::M3_DOTS;
+
+    const LAST_SCANLINE_BEFORE_VBLANK: u8 = 143;
+    const LAST_SCANLINE: u8 = 153;
+
+    pub fn m_cycle(&mut self, mut bus: PpuBus<'_>) {
+        let lcdc = Lcdc::from_bits_truncate(bus.io.lcdc.get());
+        if !lcdc.contains(Lcdc::LCD_PPU_ENABLE) {
+            return;
+        }
+
+        for _ in 0..Self::DOT_CYCLES {
+            self.dots += 1;
+
+            match self.mode {
+                0 => self.m0_dot(&mut bus),
+                1 => self.m1_dot(&mut bus),
+                2 => self.m2_dot(&mut bus),
+                3 => self.m3_dot(&mut bus),
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    fn m0_dot(&mut self, bus: &mut PpuBus<'_>) {
+        if self.dots >= Self::M0_DOTS {
+            self.next_scanline(bus);
+        }
+    }
+
+    fn m1_dot(&mut self, bus: &mut PpuBus<'_>) {
+        if self.dots >= Self::SCANLINE_DOTS {
+            self.next_scanline(bus);
+        }
+    }
+    
+    fn m2_dot(&mut self, bus: &mut PpuBus<'_>) {
+        if self.dots >= Self::M2_DOTS {
+            self.enter_mode(3, bus);
+        }
+    }
+    
+    fn m3_dot(&mut self, bus: &mut PpuBus<'_>) {
+        if self.dots >= Self::M3_DOTS {
+            self.enter_mode(0, bus);
+        }
+    }
+
+     fn next_scanline(&mut self, bus: &mut PpuBus<'_>) {
+        let ly = bus.io.ly.get();
+
+        if ly == Self::LAST_SCANLINE_BEFORE_VBLANK {
+            self.enter_mode(1, bus);
+            bus.io.ly.set(ly + 1);
+        } else {
+            self.enter_mode(2, bus);
+            let ly = if ly == Self::LAST_SCANLINE { 0 } else { ly + 1 };
+            bus.io.ly.set(ly);
+        }
+    }
+
+    fn enter_mode(&mut self, mode: u8, bus: &mut PpuBus<'_>) {
+        self.dots = 0;
+        self.mode = mode;
+
+        let stat = bus.io.stat.get() & !0b0000_0011;
+        let stat = stat | (mode & 0b0000_0011);
+        bus.io.stat.set(stat);
     }
 }
 
@@ -560,7 +650,7 @@ pub struct Bus {
     cart: Cartridge,
     ppu: Ppu,
     wram: Memory<0x2000, 0xC000>,
-    hram: Memory<0x007E, 0xFF80>,
+    hram: Memory<0x007F, 0xFF80>,
     io: IoRegisters,
     ier: Memory<0x0001, 0xFFFF>,
 }
@@ -581,6 +671,7 @@ impl Bus {
             0x8000..=0x9FFF => self.ppu.read(addr),
             0xC000..=0xDFFF => self.wram.read(addr),
             0xE000..=0xFDFF => self.wram.read(addr - 0x2000),
+            0xFEA0..=0xFEFF => 0x00, // TODO: OAM corruption
             0xFF00..=0xFF7F => self.io.read(addr),
             0xFF80..=0xFFFE => self.hram.read(addr),
             0xFFFF => self.ier.get(),
@@ -594,11 +685,16 @@ impl Bus {
             0x8000..=0x9FFF => self.ppu.write(addr, value),
             0xC000..=0xDFFF => self.wram.write(addr, value),
             0xE000..=0xFDFF => self.wram.write(addr - 0x2000, value),
+            0xFEA0..=0xFEFF => {} // unused
             0xFF80..=0xFFFE => self.hram.write(addr, value),
             0xFF00..=0xFF7F => self.io.write(addr, value),
             0xFFFF => self.ier.set(value),
-            _ => panic!("Tried to write to address {:#046}", addr),
+            _ => panic!("Tried to write to address {:#06X}", addr),
         }
+    }
+
+    pub fn sync(&mut self) {
+        self.ppu.m_cycle(PpuBus { io: &mut self.io });
     }
 }
 
@@ -650,7 +746,7 @@ bitflags! {
 
 bitflags! {
     #[derive(Default, Clone, Copy)]
-    pub struct LcdControl: u8 {
+    pub struct Lcdc: u8 {
         const LCD_PPU_ENABLE   = 0b1000_0000;
         const WINDOW_TILE_MAP  = 0b0100_0000;
         const WINDOW_ENABLE    = 0b0010_0000;
@@ -667,12 +763,16 @@ pub struct IoRegisters {
     pub srd:  Memory<0x01, 0xFF01>,
     pub srt:  Memory<0x01, 0xFF02>,
     pub ifr:  Memory<0x01, 0xFF0F>,
+    pub nr52: Memory<0x01, 0xFF26>,
     pub lcdc: Memory<0x01, 0xFF40>,
     pub stat: Memory<0x01, 0xFF41>,
     pub scy:  Memory<0x01, 0xFF42>,
     pub scx:  Memory<0x01, 0xFF43>,
     pub ly:   Memory<0x01, 0xFF44>,
     pub lyc:  Memory<0x01, 0xFF45>,
+    pub bgp:  Memory<0x01, 0xFF47>,
+    pub obp0: Memory<0x01, 0xFF48>,
+    pub obp1: Memory<0x01, 0xFF49>,
 }
 
 impl IoRegisters {
@@ -681,12 +781,16 @@ impl IoRegisters {
             0xFF01 => self.srd.get(),
             0xFF02 => self.srt.get(),
             0xFF0F => self.ifr.get(),
+            0xFF26 => self.nr52.get(),
             0xFF40 => self.lcdc.get(),
             0xFF41 => self.stat.get(),
             0xFF42 => self.scy.get(),
             0xFF43 => self.scx.get(),
             0xFF44 => self.ly.get(),
             0xFF45 => self.lyc.get(),
+            0xFF47 => self.bgp.get(),
+            0xFF48 => self.obp0.get(),
+            0xFF49 => self.obp1.get(),
             _ => panic!("Tried to read IO register at address {:#06X}", addr),
         }
     }
@@ -696,12 +800,16 @@ impl IoRegisters {
             0xFF01 => self.srd.set(value),
             0xFF02 => self.srt.set(value),
             0xFF0F => self.ifr.set(value),
+            0xFF26 => self.nr52.set(value),
             0xFF40 => self.lcdc.set(value),
             0xFF41 => self.stat.set(value),
             0xFF42 => self.scy.set(value),
             0xFF43 => self.scx.set(value),
             0xFF44 => self.ly.set(value),
             0xFF45 => self.lyc.set(value),
+            0xFF47 => self.bgp.set(value),
+            0xFF48 => self.obp0.set(value),
+            0xFF49 => self.obp1.set(value),
             _ => panic!("Tried to write to IO register at address {:#06X} [{:#04X} {:#010b}]", addr, value, value),
         }
     }
