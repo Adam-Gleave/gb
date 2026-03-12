@@ -416,9 +416,10 @@ impl Cpu {
             0xBC => self.cp(Register::A, Register::H),
             0xBD => self.cp(Register::A, Register::L),
             0xBE => self.cp(Register::A, RegisterPtr::HL),
-            0xBF => self.cp(Register::A, RegisterPtr::A),
+            0xBF => self.cp(Register::A, Register::A),
             0xC3 => self.jp(),
             0xCD => self.call_16(Addr16),
+            0xC9 => self.ret(),
             0xE0 => self.load_8_8(Ind8, Register::A),
             0xE2 => self.load_8_8(RegisterPtr::C, Register::A),
             0xEA => self.load_8_8(Ind16, Register::A),
@@ -573,6 +574,11 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
+    fn ret(&mut self) {
+        self.do_ret();
+        self.prefetch(self.pc.get());
+    }
+
     fn di(&mut self) {
         self.ime = false;
         self.prefetch(self.pc.get());
@@ -606,6 +612,12 @@ impl Cpu {
         self.pc.set(addr);
     }
 
+    fn do_ret(&mut self) {
+        let addr = self.do_pop_16();
+        self.pc.set(addr);
+        self.cycle();
+    }
+
     fn do_push_16(&mut self, value: u16) {
         let [lo, hi] = u16::to_le_bytes(value);
         self.cycle();
@@ -613,6 +625,14 @@ impl Cpu {
         self.write_cycle(self.sp, hi);
         self.sp = self.sp.wrapping_sub(1);
         self.write_cycle(self.sp, lo);
+    }
+
+    fn do_pop_16(&mut self) -> u16 {
+        let lo = self.read_cycle(self.sp);
+        self.sp = self.sp.wrapping_add(1);
+        let hi = self.read_cycle(self.sp);
+        self.sp = self.sp.wrapping_add(1);
+        u16::from_le_bytes([lo, hi])
     }
 
     fn load_r16(hi: u8, lo: u8) -> u16 {
