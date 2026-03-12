@@ -250,6 +250,10 @@ impl Pc {
     pub fn inc(&mut self) {
         self.0 = self.0.wrapping_add(1);
     }
+
+    pub fn dec(&mut self) {
+        self.0 = self.0.wrapping_sub(1);
+    }
 }
 
 #[derive(Default)]
@@ -284,6 +288,7 @@ impl Cpu {
 
         match self.opcode {
             0x00 => self.noop(),
+            0x01 => self.load_16_16(RegisterPair::BC, Imm16),
             0x03 => self.inc_16(RegisterPair::BC),
             0x04 => self.inc_8(Register::B),
             0x05 => self.dec_8(Register::B),
@@ -293,6 +298,7 @@ impl Cpu {
             0x0C => self.inc_8(Register::C),
             0x0D => self.dec_8(Register::C),
             0x0E => self.load_8_8(Register::C, Imm8),
+            0x11 => self.load_16_16(RegisterPair::DE, Imm16),
             0x13 => self.inc_16(RegisterPair::DE),
             0x14 => self.inc_8(Register::D),
             0x15 => self.dec_8(Register::D),
@@ -396,6 +402,7 @@ impl Cpu {
             // 0xAE
             0xAF => self.xor(Register::A),
             0xC3 => self.jp(),
+            0xCD => self.call_16(Addr16),
             0xE0 => self.load_8_8(Ind8, Register::A),
             0xE2 => self.load_8_8(RegisterPtr::C, Register::A),
             0xEA => self.load_8_8(Ind16, Register::A),
@@ -456,7 +463,7 @@ impl Cpu {
     }
 
     fn halt(&mut self) -> ! {
-        loop {}
+        unimplemented!()
     } 
 
     fn load_8_8<Dst: DstOperand8, Src: SrcOperand8>(&mut self, dst: Dst, src: Src) {
@@ -532,6 +539,12 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
+    fn call_16<O: SrcOperand16>(&mut self, operand: O) {
+        let addr = operand.read(self);
+        self.do_call(addr);
+        self.prefetch(self.pc.get());
+    }
+
     fn di(&mut self) {
         self.ime = false;
         self.prefetch(self.pc.get());
@@ -558,6 +571,20 @@ impl Cpu {
     fn do_jp(&mut self, addr: u16) {
         self.pc.set(addr);
         self.cycle();
+    }
+
+    fn do_call(&mut self, addr: u16) {
+        self.do_push_16(self.pc.get());
+        self.pc.set(addr);
+    }
+
+    fn do_push_16(&mut self, value: u16) {
+        let [lo, hi] = u16::to_le_bytes(value);
+        self.cycle();
+        self.sp = self.sp.wrapping_sub(1);
+        self.write_cycle(self.sp, hi);
+        self.sp = self.sp.wrapping_sub(1);
+        self.write_cycle(self.sp, lo);
     }
 
     fn load_r16(hi: u8, lo: u8) -> u16 {
