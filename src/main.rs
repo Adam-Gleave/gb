@@ -1,4 +1,4 @@
-use std::fs::{File, read};
+use std::fs::File;
 use std::io;
 use std::io::BufReader;
 
@@ -21,7 +21,7 @@ trait DstOperand16 {
     fn write(&self, cpu: &mut Cpu, value: u16);
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Register {
     A,
     F,
@@ -63,7 +63,7 @@ impl DstOperand8 for Register {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum RegisterPair {
     AF,
     BC,
@@ -163,6 +163,9 @@ impl SrcOperand16 for Addr16 {
 
 #[derive(Clone, Copy)]
 enum RegisterPtr {
+    C,
+    BC,
+    DE,
     HL,
     HLD,
     HLI,
@@ -170,28 +173,53 @@ enum RegisterPtr {
 
 impl SrcOperand8 for RegisterPtr {
     fn read(&self, cpu: &mut Cpu) -> u8 {
-        let addr = Cpu::load_r16(cpu.h, cpu.l);
-        let value = cpu.read_cycle(addr);        
-        let addr = match self {
-            Self::HL => addr,
-            Self::HLD => addr.wrapping_sub(addr),
-            Self::HLI => addr.wrapping_add(addr),
+        let (hi, lo) = match self {
+            Self::C => (0, cpu.c),
+            Self::BC => (cpu.b, cpu.c),
+            Self::DE => (cpu.d, cpu.e),
+            Self::HL | Self::HLD | Self::HLI => (cpu.h, cpu.l),
         };
-        Cpu::store_r16(&mut cpu.h, &mut cpu.l, addr);
+        let addr = u16::from_le_bytes([lo, hi]);
+        let value = cpu.read_cycle(addr);
+
+        match self {
+            Self::HLD => {
+                let addr = addr.wrapping_sub(1);
+                Cpu::store_r16(&mut cpu.h, &mut cpu.l, addr);
+            }
+            Self::HLI => {
+                let addr = addr.wrapping_add(1);
+                Cpu::store_r16(&mut cpu.h, &mut cpu.l, addr);
+            }
+            _ => {}
+        }
+
         value
     }
 }
 
 impl DstOperand8 for RegisterPtr {
     fn write(&self, cpu: &mut Cpu, value: u8) {
-        let addr = Cpu::load_r16(cpu.h, cpu.l);
-        cpu.write_cycle(addr, value);
-        let addr = match self {
-            Self::HL => addr,
-            Self::HLD => addr.wrapping_sub(addr),
-            Self::HLI => addr.wrapping_add(addr),
+        let (hi, lo) = match self {
+            Self::C => (0, cpu.c),
+            Self::BC => (cpu.b, cpu.c),
+            Self::DE => (cpu.d, cpu.e),
+            Self::HL | Self::HLD | Self::HLI => (cpu.h, cpu.l),
         };
-        Cpu::store_r16(&mut cpu.h, &mut cpu.l, addr);
+        let addr = u16::from_le_bytes([lo, hi]);
+        cpu.write_cycle(addr, value);
+
+        match self {
+            Self::HLD => {
+                let addr = addr.wrapping_sub(1);
+                Cpu::store_r16(&mut cpu.h, &mut cpu.l, addr);
+            }
+            Self::HLI => {
+                let addr = addr.wrapping_add(1);
+                Cpu::store_r16(&mut cpu.h, &mut cpu.l, addr);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -260,6 +288,7 @@ impl Cpu {
             0x04 => self.inc_8(Register::B),
             0x05 => self.dec_8(Register::B),
             0x06 => self.load_8_8(Register::B, Imm8),
+            0x0A => self.load_8_8(Register::A, RegisterPtr::BC),
             0x0B => self.dec_16(RegisterPair::BC),
             0x0C => self.inc_8(Register::C),
             0x0D => self.dec_8(Register::C),
@@ -268,6 +297,7 @@ impl Cpu {
             0x14 => self.inc_8(Register::D),
             0x15 => self.dec_8(Register::D),
             0x16 => self.load_8_8(Register::D, Imm8),
+            0x1A => self.load_8_8(Register::A, RegisterPtr::DE),
             0x1B => self.dec_16(RegisterPair::DE),
             0x1C => self.inc_8(Register::E),
             0x1D => self.dec_8(Register::E),
@@ -278,6 +308,7 @@ impl Cpu {
             0x24 => self.inc_8(Register::H),
             0x25 => self.dec_8(Register::H),
             0x26 => self.load_8_8(Register::H, Imm8),
+            0x2A => self.load_8_8(Register::A, RegisterPtr::HLI),
             0x2B => self.dec_16(RegisterPair::HL),
             0x2C => self.inc_8(Register::L),
             0x2D => self.dec_8(Register::L),
@@ -287,6 +318,7 @@ impl Cpu {
             0x34 => self.inc_8(RegisterPtr::HL),
             0x35 => self.dec_8(RegisterPtr::HL),
             0x36 => self.load_8_8(RegisterPtr::HL, Imm8),
+            0x3A => self.load_8_8(Register::A, RegisterPtr::HLD),
             0x3B => self.dec_16(RegisterPair::SP),
             0x3C => self.inc_8(Register::A),
             0x3D => self.dec_8(Register::A),
@@ -365,8 +397,10 @@ impl Cpu {
             0xAF => self.xor(Register::A),
             0xC3 => self.jp(),
             0xE0 => self.load_8_8(Ind8, Register::A),
+            0xE2 => self.load_8_8(RegisterPtr::C, Register::A),
             0xEA => self.load_8_8(Ind16, Register::A),
             0xF0 => self.load_8_8(Register::A, Ind8),
+            0xF2 => self.load_8_8(Register::A, RegisterPtr::C),
             0xF3 => self.di(),
             0xFE => self.cp(Register::A, Imm8),
             _ => panic!("Unexpected opcode {:#04X}", self.opcode),
@@ -547,26 +581,30 @@ pub struct PpuBus<'a> {
 
 #[derive(Default)]
 pub struct Ppu {
+    lcd_enable: bool,
     mode: u8,
     dots: u16,
     vram: Memory<0x2000, 0x8000>,
-    oam: Memory<0x009F, 0xFE00>,
+    oam: Memory<0x0100, 0xFE00>,
 } 
 
 impl Ppu {
     pub fn read(&self, addr: u16) -> u8 {
         match addr {
-            0x8000..=0x9FFF if self.mode != 3 => self.vram.read(addr),
-            0xFE00..=0xFE9F if self.mode <= 1 => self.oam.read(addr),
-            _ => panic!("Tried to read from PPU-managed address {:#046}", addr),
+            0x8000..=0x9FFF if !self.lcd_enable || self.mode != 3 => self.vram.read(addr),
+            0xFE00..=0xFE9F if !self.lcd_enable || self.mode <= 1 => self.oam.read(addr),
+            _ => {
+                println!("Tried to read from PPU-managed address {:#06X}", addr);
+                0xFF
+            }
         }
     }
 
     pub fn write(&mut self, addr: u16, value: u8) {
         match addr {
-            0x8000..=0x9FFF if self.mode != 3 => self.vram.write(addr, value),
-            0xFE00..=0xFE9F if self.mode <= 1 => self.oam.write(addr, value),
-            _ => panic!("Tried to write to PPU-managed address {:#046} in mode {}", addr, self.mode),
+            0x8000..=0x9FFF if !self.lcd_enable || self.mode != 3 => self.vram.write(addr, value),
+            0xFE00..=0xFE9F if !self.lcd_enable || self.mode <= 1 => self.oam.write(addr, value),
+            _ => panic!("Tried to write to PPU-managed address {:#06X} in mode {}", addr, self.mode),
         }
     }
 
@@ -581,7 +619,9 @@ impl Ppu {
 
     pub fn m_cycle(&mut self, mut bus: PpuBus<'_>) {
         let lcdc = Lcdc::from_bits_truncate(bus.io.lcdc.get());
-        if !lcdc.contains(Lcdc::LCD_PPU_ENABLE) {
+        self.lcd_enable = lcdc.contains(Lcdc::LCD_PPU_ENABLE);
+
+        if !self.lcd_enable {
             return;
         }
 
@@ -671,6 +711,7 @@ impl Bus {
             0x8000..=0x9FFF => self.ppu.read(addr),
             0xC000..=0xDFFF => self.wram.read(addr),
             0xE000..=0xFDFF => self.wram.read(addr - 0x2000),
+            0xFE00..=0xFE9F => self.ppu.read(addr),
             0xFEA0..=0xFEFF => 0x00, // TODO: OAM corruption
             0xFF00..=0xFF7F => self.io.read(addr),
             0xFF80..=0xFFFE => self.hram.read(addr),
@@ -685,6 +726,7 @@ impl Bus {
             0x8000..=0x9FFF => self.ppu.write(addr, value),
             0xC000..=0xDFFF => self.wram.write(addr, value),
             0xE000..=0xFDFF => self.wram.write(addr - 0x2000, value),
+            0xFE00..=0xFE9F => self.ppu.write(addr, value),
             0xFEA0..=0xFEFF => {} // unused
             0xFF80..=0xFFFE => self.hram.write(addr, value),
             0xFF00..=0xFF7F => self.io.write(addr, value),
@@ -763,6 +805,8 @@ pub struct IoRegisters {
     pub srd:  Memory<0x01, 0xFF01>,
     pub srt:  Memory<0x01, 0xFF02>,
     pub ifr:  Memory<0x01, 0xFF0F>,
+    pub nr50: Memory<0x01, 0xFF24>,
+    pub nr51: Memory<0x01, 0xFF25>,
     pub nr52: Memory<0x01, 0xFF26>,
     pub lcdc: Memory<0x01, 0xFF40>,
     pub stat: Memory<0x01, 0xFF41>,
@@ -781,6 +825,8 @@ impl IoRegisters {
             0xFF01 => self.srd.get(),
             0xFF02 => self.srt.get(),
             0xFF0F => self.ifr.get(),
+            0xFF24 => self.nr50.get(),
+            0xFF25 => self.nr51.get(),
             0xFF26 => self.nr52.get(),
             0xFF40 => self.lcdc.get(),
             0xFF41 => self.stat.get(),
@@ -791,6 +837,7 @@ impl IoRegisters {
             0xFF47 => self.bgp.get(),
             0xFF48 => self.obp0.get(),
             0xFF49 => self.obp1.get(),
+            0xFF7F => 0xFF, 
             _ => panic!("Tried to read IO register at address {:#06X}", addr),
         }
     }
@@ -800,6 +847,8 @@ impl IoRegisters {
             0xFF01 => self.srd.set(value),
             0xFF02 => self.srt.set(value),
             0xFF0F => self.ifr.set(value),
+            0xFF24 => self.nr50.set(value),
+            0xFF25 => self.nr51.set(value),
             0xFF26 => self.nr52.set(value),
             0xFF40 => self.lcdc.set(value),
             0xFF41 => self.stat.set(value),
@@ -810,6 +859,7 @@ impl IoRegisters {
             0xFF47 => self.bgp.set(value),
             0xFF48 => self.obp0.set(value),
             0xFF49 => self.obp1.set(value),
+            0xFF7F => {}, 
             _ => panic!("Tried to write to IO register at address {:#06X} [{:#04X} {:#010b}]", addr, value, value),
         }
     }
