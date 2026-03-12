@@ -318,6 +318,7 @@ impl Cpu {
             0x2B => self.dec_16(RegisterPair::HL),
             0x2C => self.inc_8(Register::L),
             0x2D => self.dec_8(Register::L),
+            0x2F => self.cpl(),
             0x31 => self.load_16_16(RegisterPair::SP, Imm16),
             0x32 => self.load_8_8(RegisterPtr::HLD, Register::A),
             0x33 => self.inc_16(RegisterPair::SP),
@@ -393,6 +394,14 @@ impl Cpu {
             0x7D => self.load_8_8(Register::A, Register::L),
             0x7E => self.load_8_8(Register::A, RegisterPtr::HL),
             0x7F => self.load_8_8(Register::A, Register::A),
+            0xA0 => self.and(Register::B),
+            0xA1 => self.and(Register::C),
+            0xA2 => self.and(Register::D),
+            0xA3 => self.and(Register::E),
+            0xA4 => self.and(Register::H),
+            0xA5 => self.and(Register::L),
+            0xA6 => self.and(RegisterPtr::HL),
+            0xA7 => self.and(Register::A),
             0xA8 => self.xor(Register::B),
             0xA9 => self.xor(Register::C),
             0xAA => self.xor(Register::D),
@@ -422,6 +431,7 @@ impl Cpu {
             0xC9 => self.ret(),
             0xE0 => self.load_8_8(Ind8, Register::A),
             0xE2 => self.load_8_8(RegisterPtr::C, Register::A),
+            0xE6 => self.and(Imm8),
             0xEA => self.load_8_8(Ind16, Register::A),
             0xEE => self.xor(Imm8),
             0xF0 => self.load_8_8(Register::A, Ind8),
@@ -539,6 +549,24 @@ impl Cpu {
         if !self.f.contains(Flags::Z) {
             self.do_jr(offset as i8);
         }
+        self.prefetch(self.pc.get());
+    }
+
+    fn cpl(&mut self) {
+        self.a = !self.a;
+        self.f.set(Flags::N, true);
+        self.f.set(Flags::H, true);
+        self.prefetch(self.pc.get());
+    }
+
+    fn and<O: SrcOperand8>(&mut self, operand: O) {
+        let operand = operand.read(self);
+        let value = self.a & operand;
+        self.a = value;
+        self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, false);
         self.prefetch(self.pc.get());
     }
 
