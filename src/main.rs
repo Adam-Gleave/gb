@@ -136,28 +136,29 @@ impl DstOperand8 for Ind8 {
 }
 
 #[derive(Clone, Copy)]
-struct Ind16;
+struct Addr16;
 
-impl SrcOperand8 for Ind16 {
+impl SrcOperand8 for Addr16 {
     fn read(&self, cpu: &mut Cpu) -> u8 {
         let addr = cpu.fetch_imm16();
         cpu.read_cycle(addr)
     }
 }
 
-impl DstOperand8 for Ind16 {
+impl DstOperand8 for Addr16 {
     fn write(&self, cpu: &mut Cpu, value: u8) {
         let addr = cpu.fetch_imm16();
         cpu.write_cycle(addr, value);
     }
 }
 
-#[derive(Clone, Copy)]
-struct Addr16;
-
-impl SrcOperand16 for Addr16 {
-    fn read(&self, cpu: &mut Cpu) -> u16 {
-        cpu.fetch_imm16()
+impl DstOperand16 for Addr16 {
+    fn write(&self, cpu: &mut Cpu, value: u16) {
+        let addr = cpu.fetch_imm16();
+        let [lo, hi] = value.to_le_bytes();
+        cpu.write_cycle(addr, lo);
+        let addr = addr.wrapping_add(1);
+        cpu.write_cycle(addr, hi);
     }
 }
 
@@ -223,6 +224,32 @@ impl DstOperand8 for RegisterPtr {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct SpE8;
+
+impl SrcOperand16 for SpE8 {
+    fn read(&self, cpu: &mut Cpu) -> u16 {
+        let addr = RegisterPair::SP.read(cpu);
+        let offset = cpu.fetch_imm8() as i8;
+        addr.wrapping_add(offset as u16)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum Cond {
+    Set(Flags),
+    Clear(Flags),
+}
+
+impl Cond {
+    pub fn eval(&self, cpu: &Cpu) -> bool {
+        match self {
+            Cond::Set(flags) => cpu.f.contains(*flags),
+            Cond::Clear(flags) => !cpu.f.contains(*flags),
+        }
+    }
+}
+
 bitflags! {
     #[derive(Default, Clone, Copy)]
     pub struct Flags: u8 {
@@ -271,6 +298,8 @@ pub struct Cpu {
     e: u8,
     h: u8,
     l: u8,
+    
+    ei_requested: bool,
     ime: bool,
 
     bus: Bus,
@@ -286,50 +315,77 @@ impl Cpu {
     pub fn decode_execute(&mut self) {
         print!("\nOpcode: {:#04X}", self.opcode);
 
+        // TODO process interrupts here, before IME set
+
+        if self.ei_requested {
+            self.ime = true;
+        }
+
         match self.opcode {
             0x00 => self.noop(),
             0x01 => self.load_16_16(RegisterPair::BC, Imm16),
+            0x02 => self.load_8_8(RegisterPtr::BC, Register::A),
             0x03 => self.inc_16(RegisterPair::BC),
             0x04 => self.inc_8(Register::B),
             0x05 => self.dec_8(Register::B),
             0x06 => self.load_8_8(Register::B, Imm8),
+            0x07 => self.rlca(),
+            0x08 => self.load_16_16(Addr16, RegisterPair::SP),
+            // 0x09 ADD 16
             0x0A => self.load_8_8(Register::A, RegisterPtr::BC),
             0x0B => self.dec_16(RegisterPair::BC),
             0x0C => self.inc_8(Register::C),
             0x0D => self.dec_8(Register::C),
             0x0E => self.load_8_8(Register::C, Imm8),
+            0x0F => self.rrca(),
+            // 0x10 STOP
             0x11 => self.load_16_16(RegisterPair::DE, Imm16),
+            0x12 => self.load_16_16(RegisterPair::DE, Imm16),
             0x13 => self.inc_16(RegisterPair::DE),
             0x14 => self.inc_8(Register::D),
             0x15 => self.dec_8(Register::D),
             0x16 => self.load_8_8(Register::D, Imm8),
+            0x17 => self.rla(),
+            0x18 => self.jr(),
+            // 0x19 ADD 16
             0x1A => self.load_8_8(Register::A, RegisterPtr::DE),
             0x1B => self.dec_16(RegisterPair::DE),
             0x1C => self.inc_8(Register::E),
             0x1D => self.dec_8(Register::E),
-            0x20 => self.jr_nz(),
+            0x1E => self.load_8_8(Register::E, Imm8),
+            0x1F => self.rra(),
+            0x20 => self.jr_cc(Cond::Clear(Flags::Z)),
             0x21 => self.load_16_16(RegisterPair::HL, Imm16),
             0x22 => self.load_8_8(RegisterPtr::HLI, Register::A),
             0x23 => self.inc_16(RegisterPair::HL),
             0x24 => self.inc_8(Register::H),
             0x25 => self.dec_8(Register::H),
             0x26 => self.load_8_8(Register::H, Imm8),
+            // 0x27 DAA
+            0x28 => self.jr_cc(Cond::Set(Flags::Z)),
+            // 0x29 ADD 16
             0x2A => self.load_8_8(Register::A, RegisterPtr::HLI),
             0x2B => self.dec_16(RegisterPair::HL),
             0x2C => self.inc_8(Register::L),
             0x2D => self.dec_8(Register::L),
+            0x2E => self.load_8_8(Register::L, Imm8),
             0x2F => self.cpl(),
+            0x30 => self.jr_cc(Cond::Clear(Flags::C)),
             0x31 => self.load_16_16(RegisterPair::SP, Imm16),
             0x32 => self.load_8_8(RegisterPtr::HLD, Register::A),
             0x33 => self.inc_16(RegisterPair::SP),
             0x34 => self.inc_8(RegisterPtr::HL),
             0x35 => self.dec_8(RegisterPtr::HL),
             0x36 => self.load_8_8(RegisterPtr::HL, Imm8),
+            0x37 => self.scf(),
+            0x38 => self.jr_cc(Cond::Set(Flags::C)),
+            // 0x39 ADD 16
             0x3A => self.load_8_8(Register::A, RegisterPtr::HLD),
             0x3B => self.dec_16(RegisterPair::SP),
             0x3C => self.inc_8(Register::A),
             0x3D => self.dec_8(Register::A),
             0x3E => self.load_8_8(Register::A, Imm8),
+            0x3F => self.ccf(),
             0x40 => self.load_8_8(Register::B, Register::B),
             0x41 => self.load_8_8(Register::B, Register::C),
             0x42 => self.load_8_8(Register::B, Register::D),
@@ -384,7 +440,7 @@ impl Cpu {
             0x73 => self.load_8_8(RegisterPtr::HL, Register::E),
             0x74 => self.load_8_8(RegisterPtr::HL, Register::H),
             0x75 => self.load_8_8(RegisterPtr::HL, Register::L),
-            0x76 => self.halt(),
+            0x76 => self.halt(), // TODO interrupts
             0x77 => self.load_8_8(RegisterPtr::HL, Register::A),
             0x78 => self.load_8_8(Register::A, Register::B),
             0x79 => self.load_8_8(Register::A, Register::C),
@@ -394,6 +450,38 @@ impl Cpu {
             0x7D => self.load_8_8(Register::A, Register::L),
             0x7E => self.load_8_8(Register::A, RegisterPtr::HL),
             0x7F => self.load_8_8(Register::A, Register::A),
+            0x80 => self.add_8(Register::B),
+            0x81 => self.add_8(Register::C),
+            0x82 => self.add_8(Register::D),
+            0x83 => self.add_8(Register::E),
+            0x84 => self.add_8(Register::H),
+            0x85 => self.add_8(Register::L),
+            0x86 => self.add_8(RegisterPtr::HL),
+            0x87 => self.add_8(Register::A),
+            0x88 => self.adc_8(Register::B),
+            0x89 => self.adc_8(Register::C),
+            0x8A => self.adc_8(Register::D),
+            0x8B => self.add_8(Register::E),
+            0x8C => self.adc_8(Register::H),
+            0x8D => self.adc_8(Register::L),
+            0x8E => self.adc_8(RegisterPtr::HL),
+            0x8F => self.adc_8(Register::A),
+            0x90 => self.sub_8(Register::B),
+            0x91 => self.sub_8(Register::C),
+            0x92 => self.sub_8(Register::D),
+            0x93 => self.sub_8(Register::E),
+            0x94 => self.sub_8(Register::H),
+            0x95 => self.sub_8(Register::L),
+            0x96 => self.sub_8(RegisterPtr::HL),
+            0x97 => self.sub_8(Register::A),
+            0x98 => self.sbc_8(Register::B),
+            0x99 => self.sbc_8(Register::C),
+            0x9A => self.sbc_8(Register::D),
+            0x9B => self.sbc_8(Register::E),
+            0x9C => self.sbc_8(Register::H),
+            0x9D => self.sbc_8(Register::L),
+            0x9E => self.sbc_8(RegisterPtr::HL),
+            0x9F => self.sbc_8(Register::A),
             0xA0 => self.and(Register::B),
             0xA1 => self.and(Register::C),
             0xA2 => self.and(Register::D),
@@ -426,23 +514,68 @@ impl Cpu {
             0xBD => self.cp(Register::A, Register::L),
             0xBE => self.cp(Register::A, RegisterPtr::HL),
             0xBF => self.cp(Register::A, Register::A),
-            0xC3 => self.jp(),
+            0xC0 => self.ret_cc(Cond::Clear(Flags::Z)),
+            0xC1 => self.pop(RegisterPair::BC),
+            0xC2 => self.jp_cc(Imm16, Cond::Clear(Flags::Z)),
+            0xC3 => self.jp(Imm16),
+            0xC4 => self.call_cc(Cond::Clear(Flags::Z)),
+            0xC5 => self.push(RegisterPair::BC),
+            0xC6 => self.add_8(Imm8),
+            0xC7 => self.rst(0x00),
+            0xC8 => self.ret_cc(Cond::Set(Flags::Z)),
             0xC9 => self.ret(),
+            0xCA => self.jp_cc(Imm16, Cond::Set(Flags::Z)),
             0xCB => self.cb(),
-            0xCD => self.call_16(Addr16),
+            0xCC => self.call_cc(Cond::Set(Flags::Z)),
+            0xCD => self.call(),
+            0xCE => self.adc_8(Imm8),
             0xCF => self.rst(0x08),
+            0xD0 => self.ret_cc(Cond::Clear(Flags::C)),
+            0xD1 => self.pop(RegisterPair::DE),
+            0xD2 => self.jp_cc(Imm16, Cond::Clear(Flags::C)),
+            // 0xD3 illegal
+            0xD4 => self.call_cc(Cond::Clear(Flags::C)),
+            0xD5 => self.push(RegisterPair::DE),
+            0xD6 => self.sub_8(Imm8),
+            0xD7 => self.rst(0x10),
+            0xD8 => self.ret_cc(Cond::Set(Flags::C)),
+            0xD9 => self.reti(),
+            0xDA => self.jp_cc(Imm16, Cond::Set(Flags::C)),
+            // 0xDB illegal
+            0xDC => self.call_cc(Cond::Set(Flags::C)),
+            // 0xDD illegal
+            0xDE => self.sbc_8(Imm8),
             0xDF => self.rst(0x18),
             0xE0 => self.load_8_8(Ind8, Register::A),
+            0xE1 => self.pop(RegisterPair::HL),
             0xE2 => self.load_8_8(RegisterPtr::C, Register::A),
+            // 0xE3 illegal
+            // 0xE4 illegal
+            0xE5 => self.push(RegisterPair::HL),
             0xE6 => self.and(Imm8),
-            0xEA => self.load_8_8(Ind16, Register::A),
+            0xE7 => self.rst(0x20),
+            // 0xE8 ADD SP e8
+            0xE9 => self.jp(RegisterPair::HL),
+            0xEA => self.load_8_8(Addr16, Register::A),
+            // 0xEB illegal
+            // 0xEC illegal
+            // 0xED illegal
             0xEE => self.xor(Imm8),
             0xEF => self.rst(0x28),
             0xF0 => self.load_8_8(Register::A, Ind8),
+            // 0xF1 POP AF
             0xF2 => self.load_8_8(Register::A, RegisterPtr::C),
             0xF3 => self.di(),
+            // 0xF4 illegal
+            0xF5 => self.push(RegisterPair::AF),
             0xF6 => self.or(Imm8),
+            0xF7 => self.rst(0x30),
+            0xF8 => self.load_16_16(RegisterPair::HL, SpE8), // TODO correct flags here
+            0xF9 => self.load_16_16(RegisterPair::HL, RegisterPair::SP),
+            0xFA => self.load_8_8(Register::A, Addr16),
             0xFB => self.ei(),
+            // 0xFC illegal
+            // 0xFD illegal
             0xFE => self.cp(Register::A, Imm8),
             0xFF => self.rst(0x38),
             _ => panic!("Unexpected opcode {:#04X}", self.opcode),
@@ -461,6 +594,198 @@ impl Cpu {
             0x35 => self.swap(Register::L),
             0x36 => self.swap(RegisterPtr::HL),
             0x37 => self.swap(Register::A),
+            0x40 => self.bit(0, Register::B),
+            0x41 => self.bit(0, Register::C),
+            0x42 => self.bit(0, Register::D),
+            0x43 => self.bit(0, Register::E),
+            0x44 => self.bit(0, Register::H),
+            0x45 => self.bit(0, Register::L),
+            0x46 => self.bit(0, RegisterPtr::HL),
+            0x47 => self.bit(0, Register::A),
+            0x48 => self.bit(1, Register::B),
+            0x49 => self.bit(1, Register::C),
+            0x4A => self.bit(1, Register::D),
+            0x4B => self.bit(1, Register::E),
+            0x4C => self.bit(1, Register::H),
+            0x4D => self.bit(1, Register::L),
+            0x4E => self.bit(1, RegisterPtr::HL),
+            0x4F => self.bit(1, Register::A),
+            0x50 => self.bit(2, Register::B),
+            0x51 => self.bit(2, Register::C),
+            0x52 => self.bit(2, Register::D),
+            0x53 => self.bit(2, Register::E),
+            0x54 => self.bit(2, Register::H),
+            0x55 => self.bit(2, Register::L),
+            0x56 => self.bit(2, RegisterPtr::HL),
+            0x57 => self.bit(2, Register::A),
+            0x58 => self.bit(3, Register::B),
+            0x59 => self.bit(3, Register::C),
+            0x5A => self.bit(3, Register::D),
+            0x5B => self.bit(3, Register::E),
+            0x5C => self.bit(3, Register::H),
+            0x5D => self.bit(3, Register::L),
+            0x5E => self.bit(3, RegisterPtr::HL),
+            0x5F => self.bit(3, Register::A),
+            0x60 => self.bit(4, Register::B),
+            0x61 => self.bit(4, Register::C),
+            0x62 => self.bit(4, Register::D),
+            0x63 => self.bit(4, Register::E),
+            0x64 => self.bit(4, Register::H),
+            0x65 => self.bit(4, Register::L),
+            0x66 => self.bit(4, RegisterPtr::HL),
+            0x67 => self.bit(4, Register::A),
+            0x68 => self.bit(5, Register::B),
+            0x69 => self.bit(5, Register::C),
+            0x6A => self.bit(5, Register::D),
+            0x6B => self.bit(5, Register::E),
+            0x6C => self.bit(5, Register::H),
+            0x6D => self.bit(5, Register::L),
+            0x6E => self.bit(5, RegisterPtr::HL),
+            0x6F => self.bit(5, Register::A),
+            0x70 => self.bit(6, Register::B),
+            0x71 => self.bit(6, Register::C),
+            0x72 => self.bit(6, Register::D),
+            0x73 => self.bit(6, Register::E),
+            0x74 => self.bit(6, Register::H),
+            0x75 => self.bit(6, Register::L),
+            0x76 => self.bit(6, RegisterPtr::HL),
+            0x77 => self.bit(6, Register::A),
+            0x78 => self.bit(7, Register::B),
+            0x79 => self.bit(7, Register::C),
+            0x7A => self.bit(7, Register::D),
+            0x7B => self.bit(7, Register::E),
+            0x7C => self.bit(7, Register::H),
+            0x7D => self.bit(7, Register::L),
+            0x7E => self.bit(7, RegisterPtr::HL),
+            0x7F => self.bit(7, Register::A),
+            0x80 => self.res(0, Register::B),
+            0x81 => self.res(0, Register::C),
+            0x82 => self.res(0, Register::D),
+            0x83 => self.res(0, Register::E),
+            0x84 => self.res(0, Register::H),
+            0x85 => self.res(0, Register::L),
+            0x86 => self.res(0, RegisterPtr::HL),
+            0x87 => self.res(0, Register::A),
+            0x88 => self.res(1, Register::B),
+            0x89 => self.res(1, Register::C),
+            0x8A => self.res(1, Register::D),
+            0x8B => self.res(1, Register::E),
+            0x8C => self.res(1, Register::H),
+            0x8D => self.res(1, Register::L),
+            0x8E => self.res(1, RegisterPtr::HL),
+            0x8F => self.res(1, Register::A),
+            0x90 => self.res(2, Register::B),
+            0x91 => self.res(2, Register::C),
+            0x92 => self.res(2, Register::D),
+            0x93 => self.res(2, Register::E),
+            0x94 => self.res(2, Register::H),
+            0x95 => self.res(2, Register::L),
+            0x96 => self.res(2, RegisterPtr::HL),
+            0x97 => self.res(2, Register::A),
+            0x98 => self.res(3, Register::B),
+            0x99 => self.res(3, Register::C),
+            0x9A => self.res(3, Register::D),
+            0x9B => self.res(3, Register::E),
+            0x9C => self.res(3, Register::H),
+            0x9D => self.res(3, Register::L),
+            0x9E => self.res(3, RegisterPtr::HL),
+            0x9F => self.res(3, Register::A),
+            0xA0 => self.res(4, Register::B),
+            0xA1 => self.res(4, Register::C),
+            0xA2 => self.res(4, Register::D),
+            0xA3 => self.res(4, Register::E),
+            0xA4 => self.res(4, Register::H),
+            0xA5 => self.res(4, Register::L),
+            0xA6 => self.res(4, RegisterPtr::HL),
+            0xA7 => self.res(4, Register::A),
+            0xA8 => self.res(5, Register::B),
+            0xA9 => self.res(5, Register::C),
+            0xAA => self.res(5, Register::D),
+            0xAB => self.res(5, Register::E),
+            0xAC => self.res(5, Register::H),
+            0xAD => self.res(5, Register::L),
+            0xAE => self.res(5, RegisterPtr::HL),
+            0xAF => self.res(5, Register::A),
+            0xB0 => self.res(6, Register::B),
+            0xB1 => self.res(6, Register::C),
+            0xB2 => self.res(6, Register::D),
+            0xB3 => self.res(6, Register::E),
+            0xB4 => self.res(6, Register::H),
+            0xB5 => self.res(6, Register::L),
+            0xB6 => self.res(6, RegisterPtr::HL),
+            0xB7 => self.res(6, Register::A),
+            0xB8 => self.res(7, Register::B),
+            0xB9 => self.res(7, Register::C),
+            0xBA => self.res(7, Register::D),
+            0xBB => self.res(7, Register::E),
+            0xBC => self.res(7, Register::H),
+            0xBD => self.res(7, Register::L),
+            0xBE => self.res(7, RegisterPtr::HL),
+            0xBF => self.res(7, Register::A),
+            0xC0 => self.set(0, Register::B),
+            0xC1 => self.set(0, Register::C),
+            0xC2 => self.set(0, Register::D),
+            0xC3 => self.set(0, Register::E),
+            0xC4 => self.set(0, Register::H),
+            0xC5 => self.set(0, Register::L),
+            0xC6 => self.set(0, RegisterPtr::HL),
+            0xC7 => self.set(0, Register::A),
+            0xC8 => self.set(1, Register::B),
+            0xC9 => self.set(1, Register::C),
+            0xCA => self.set(1, Register::D),
+            0xCB => self.set(1, Register::E),
+            0xCC => self.set(1, Register::H),
+            0xCD => self.set(1, Register::L),
+            0xCE => self.set(1, RegisterPtr::HL),
+            0xCF => self.set(1, Register::A),
+            0xD0 => self.set(2, Register::B),
+            0xD1 => self.set(2, Register::C),
+            0xD2 => self.set(2, Register::D),
+            0xD3 => self.set(2, Register::E),
+            0xD4 => self.set(2, Register::H),
+            0xD5 => self.set(2, Register::L),
+            0xD6 => self.set(2, RegisterPtr::HL),
+            0xD7 => self.set(2, Register::A),
+            0xD8 => self.set(3, Register::B),
+            0xD9 => self.set(3, Register::C),
+            0xDA => self.set(3, Register::D),
+            0xDB => self.set(3, Register::E),
+            0xDC => self.set(3, Register::H),
+            0xDD => self.set(3, Register::L),
+            0xDE => self.set(3, RegisterPtr::HL),
+            0xDF => self.set(3, Register::A),
+            0xE0 => self.set(4, Register::B),
+            0xE1 => self.set(4, Register::C),
+            0xE2 => self.set(4, Register::D),
+            0xE3 => self.set(4, Register::E),
+            0xE4 => self.set(4, Register::H),
+            0xE5 => self.set(4, Register::L),
+            0xE6 => self.set(4, RegisterPtr::HL),
+            0xE7 => self.set(4, Register::A),
+            0xE8 => self.set(5, Register::B),
+            0xE9 => self.set(5, Register::C),
+            0xEA => self.set(5, Register::D),
+            0xEB => self.set(5, Register::E),
+            0xEC => self.set(5, Register::H),
+            0xED => self.set(5, Register::L),
+            0xEE => self.set(5, RegisterPtr::HL),
+            0xEF => self.set(5, Register::A),
+            0xF0 => self.set(6, Register::B),
+            0xF1 => self.set(6, Register::C),
+            0xF2 => self.set(6, Register::D),
+            0xF3 => self.set(6, Register::E),
+            0xF4 => self.set(6, Register::H),
+            0xF5 => self.set(6, Register::L),
+            0xF6 => self.set(6, RegisterPtr::HL),
+            0xF7 => self.set(6, Register::A),
+            0xF8 => self.set(7, Register::B),
+            0xF9 => self.set(7, Register::C),
+            0xFA => self.set(7, Register::D),
+            0xFB => self.set(7, Register::E),
+            0xFC => self.set(7, Register::H),
+            0xFD => self.set(7, Register::L),
+            0xFE => self.set(7, RegisterPtr::HL),
+            0xFF => self.set(7, Register::A),
             _ => panic!("Unexpected prefixed opcode $CB {:#04X}", self.opcode),
         }
     }
@@ -565,9 +890,74 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
-    fn jr_nz(&mut self) {
+    fn rlca(&mut self) {
+        let carry = self.a & 0x80 == 0x80;
+        let bit_0 = if carry { 0x01 } else { 0x00 };
+        self.a = (self.a << 1) | bit_0;
+        self.f.set(Flags::Z, false);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, carry);
+        self.prefetch(self.pc.get());
+    }
+
+    fn rla(&mut self) {
+        let old_carry = if self.f.contains(Flags::C) { 0x01 } else { 0x00 };
+        let carry = self.a & 0x80 == 0x80;
+        self.a = (self.a << 1) | old_carry;
+        self.f.set(Flags::Z, false);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, carry);
+        self.prefetch(self.pc.get());
+    }
+
+    fn rrca(&mut self) {
+        let carry = self.a & 0x01 == 0x01;
+        let bit_7 = if self.a & 0x80 == 0x80 { 0x80 } else { 0x00 };
+        self.a = bit_7 | (self.a >> 1);
+        self.f.set(Flags::Z, false);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, carry);
+        self.prefetch(self.pc.get());
+    }
+
+    fn rra(&mut self) {
+        let old_carry = if self.f.contains(Flags::C) { 0b1000_0000 } else { 0x00 };
+        let carry = self.a & 0x01 == 0x01;
+        self.a = (self.a >> 1) | old_carry;
+        self.f.set(Flags::Z, false);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, carry);
+        self.prefetch(self.pc.get());
+    }
+
+    fn scf(&mut self) {
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, true);
+        self.prefetch(self.pc.get());
+    }
+
+    fn ccf(&mut self) {
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, !self.f.contains(Flags::C));
+        self.prefetch(self.pc.get());
+    }
+
+    fn jr(&mut self) {
         let offset = self.fetch_imm8();
-        if !self.f.contains(Flags::Z) {
+        self.do_jr(offset as i8);
+        self.prefetch(self.pc.get());
+    }
+
+    fn jr_cc(&mut self, cond: Cond) {
+        let offset = self.fetch_imm8();
+        let eval = cond.eval(self);
+        if eval {
             self.do_jr(offset as i8);
         }
         self.prefetch(self.pc.get());
@@ -577,6 +967,56 @@ impl Cpu {
         self.a = !self.a;
         self.f.set(Flags::N, true);
         self.f.set(Flags::H, true);
+        self.prefetch(self.pc.get());
+    }
+
+    fn add_8<O: SrcOperand8>(&mut self, operand: O) {
+        let old = self.a;
+        let operand = operand.read(self);
+        let value = self.a.wrapping_add(operand);
+        self.a = value;
+        self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, (operand & 0xF) + (old & 0xF) > 0xF);
+        self.f.set(Flags::C, operand as u16 + old as u16 > 0xFF);
+        self.prefetch(self.pc.get());
+    }
+
+    fn adc_8<O: SrcOperand8>(&mut self, operand: O) {
+        let old = self.a;
+        let carry = if self.f.contains(Flags::C) { 1 } else { 0 };
+        let operand = operand.read(self);
+        let value = self.a.wrapping_add(operand).wrapping_add(carry);
+        self.a = value;
+        self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, (operand & 0xF) + (old & 0xF) + carry > 0xF);
+        self.f.set(Flags::C, operand as u16 + old as u16 + carry as u16 > 0xFF);
+        self.prefetch(self.pc.get());
+    }
+
+    fn sub_8<O: SrcOperand8>(&mut self, operand: O) {
+        let old = self.a;
+        let operand = operand.read(self);
+        let value = self.a.wrapping_sub(operand);
+        self.a = value;
+        self.try_set_z(value);
+        self.f.set(Flags::N, true);
+        self.f.set(Flags::H, (old & 0xF) < (value & 0xF));
+        self.f.set(Flags::C, operand < value);
+        self.prefetch(self.pc.get());
+    }
+
+    fn sbc_8<O: SrcOperand8>(&mut self, operand: O) {
+        let old = self.a;
+        let carry = if self.f.contains(Flags::C) { 1 } else { 0 };
+        let operand = operand.read(self);
+        let value = self.a.wrapping_sub(operand).wrapping_sub(carry);
+        self.a = value;
+        self.try_set_z(value);
+        self.f.set(Flags::N, true);
+        self.f.set(Flags::H, (operand & 0xF) < (old & 0xF) + carry);
+        self.f.set(Flags::C, (operand as u16) < (old as u16 + carry as u16));
         self.prefetch(self.pc.get());
     }
 
@@ -612,8 +1052,17 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
-    fn jp(&mut self) {
-        let addr = self.fetch_imm16();
+    fn jp_cc<O: SrcOperand16>(&mut self, operand: O, cond: Cond) {
+        let addr = operand.read(self);
+        let eval = cond.eval(self);
+        if eval {
+            self.do_jp(addr);
+        }
+        self.prefetch(self.pc.get());
+    }
+
+    fn jp<O: SrcOperand16>(&mut self, operand: O) {
+        let addr = operand.read(self);
         self.do_jp(addr);
         self.prefetch(self.pc.get());
     }
@@ -628,14 +1077,50 @@ impl Cpu {
         self.prefixed_decode_execute();
     }
 
-    fn call_16<O: SrcOperand16>(&mut self, operand: O) {
-        let addr = operand.read(self);
+    fn call(&mut self) {
+        let addr = self.fetch_imm16();
         self.do_call(addr);
+        self.prefetch(self.pc.get());
+    }
+
+    fn call_cc(&mut self, cond: Cond) {
+        let addr = self.fetch_imm16();
+        let eval = cond.eval(self);
+        if eval {
+            self.do_call(addr);
+        }
         self.prefetch(self.pc.get());
     }
 
     fn ret(&mut self) {
         self.do_ret();
+        self.prefetch(self.pc.get());
+    }
+
+    fn ret_cc(&mut self, cond: Cond) {
+        self.cycle();
+        let eval = cond.eval(self);
+        if eval {
+            self.do_ret();
+        }
+        self.prefetch(self.pc.get());
+    }
+
+    fn reti(&mut self) {
+        self.ime = true;
+        self.do_ret();
+        self.prefetch(self.pc.get());
+    }
+
+    fn push<S: SrcOperand16>(&mut self, src: S) {
+        let value = src.read(self);
+        self.do_push_16(value);
+        self.prefetch(self.pc.get());
+    }
+
+    fn pop<D: DstOperand16>(&mut self, dst: D) {
+        let value = self.do_pop_16();
+        dst.write(self, value);
         self.prefetch(self.pc.get());
     }
 
@@ -645,7 +1130,7 @@ impl Cpu {
     }
 
     fn ei(&mut self) {
-        self.ime = true;
+        self.ei_requested = true;
         self.prefetch(self.pc.get());
     }
 
@@ -671,6 +1156,31 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, false);
+        self.prefetch(self.pc.get());
+    }
+
+    fn bit<O: SrcOperand8 + DstOperand8>(&mut self, bit: u8, operand: O) {
+        let operand = operand.read(self);
+        let bit = 1 << bit;
+        let test = operand & bit;
+        self.f.set(Flags::Z, test == 0);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, true);
+    }
+
+    fn res<O: SrcOperand8 + DstOperand8>(&mut self, bit: u8, operand: O) {
+        let old = operand.read(self);
+        let bit = 1 << bit;
+        let value = old & !bit;
+        operand.write(self, value);
+        self.prefetch(self.pc.get());
+    }
+
+    fn set<O: SrcOperand8 + DstOperand8>(&mut self, bit: u8, operand: O) {
+        let old = operand.read(self);
+        let bit = 1 << bit;
+        let value = old | bit;
+        operand.write(self, value);
         self.prefetch(self.pc.get());
     }
 
