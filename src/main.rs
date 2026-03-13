@@ -586,6 +586,54 @@ impl Cpu {
         print!("\nOpcode: $CB{:#04X}", self.opcode);
 
         match self.opcode {
+            0x00 => self.rlc(Register::B),
+            0x01 => self.rlc(Register::C),
+            0x02 => self.rlc(Register::D),
+            0x03 => self.rlc(Register::E),
+            0x04 => self.rlc(Register::H),
+            0x05 => self.rlc(Register::L),
+            0x06 => self.rlc(RegisterPtr::HL),
+            0x07 => self.rlc(Register::A),
+            0x08 => self.rrc(Register::B),
+            0x09 => self.rrc(Register::C),
+            0x0A => self.rrc(Register::D),
+            0x0B => self.rrc(Register::E),
+            0x0C => self.rrc(Register::H),
+            0x0D => self.rrc(Register::L),
+            0x0E => self.rrc(RegisterPtr::HL),
+            0x0F => self.rrc(Register::A),
+            0x10 => self.rl(Register::B),
+            0x11 => self.rl(Register::C),
+            0x12 => self.rl(Register::D),
+            0x13 => self.rl(Register::E),
+            0x14 => self.rl(Register::H),
+            0x15 => self.rl(Register::L),
+            0x16 => self.rl(RegisterPtr::HL),
+            0x17 => self.rl(Register::A),
+            0x18 => self.rr(Register::B),
+            0x19 => self.rr(Register::C),
+            0x1A => self.rr(Register::D),
+            0x1B => self.rr(Register::E),
+            0x1C => self.rr(Register::H),
+            0x1D => self.rr(Register::L),
+            0x1E => self.rr(RegisterPtr::HL),
+            0x1F => self.rr(Register::A),
+            0x20 => self.sla(Register::B),
+            0x21 => self.sla(Register::C),
+            0x22 => self.sla(Register::D),
+            0x23 => self.sla(Register::E),
+            0x24 => self.sla(Register::H),
+            0x25 => self.sla(Register::L),
+            0x26 => self.sla(RegisterPtr::HL),
+            0x27 => self.sla(Register::A),
+            0x28 => self.sra(Register::B),
+            0x29 => self.sra(Register::C),
+            0x2A => self.sra(Register::D),
+            0x2B => self.sra(Register::E),
+            0x2C => self.sra(Register::H),
+            0x2D => self.sra(Register::L),
+            0x2E => self.sra(RegisterPtr::HL),
+            0x2F => self.sra(Register::A),
             0x30 => self.swap(Register::B),
             0x31 => self.swap(Register::C),
             0x32 => self.swap(Register::D),
@@ -594,6 +642,14 @@ impl Cpu {
             0x35 => self.swap(Register::L),
             0x36 => self.swap(RegisterPtr::HL),
             0x37 => self.swap(Register::A),
+            0x38 => self.srl(Register::B),
+            0x39 => self.srl(Register::C),
+            0x3A => self.srl(Register::D),
+            0x3B => self.srl(Register::E),
+            0x3C => self.srl(Register::H),
+            0x3D => self.srl(Register::L),
+            0x3E => self.srl(RegisterPtr::HL),
+            0x3F => self.srl(Register::A),
             0x40 => self.bit(0, Register::B),
             0x41 => self.bit(0, Register::C),
             0x42 => self.bit(0, Register::D),
@@ -786,7 +842,6 @@ impl Cpu {
             0xFD => self.set(7, Register::L),
             0xFE => self.set(7, RegisterPtr::HL),
             0xFF => self.set(7, Register::A),
-            _ => panic!("Unexpected prefixed opcode $CB {:#04X}", self.opcode),
         }
     }
 
@@ -970,6 +1025,56 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
+    fn rlc<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
+        let value = operand.read(self);
+        let carry = value & 0x80 == 0x80;
+        let bit_0 = if carry { 0x01 } else { 0x00 };
+        let value = (value << 1) | bit_0;
+        operand.write(self, value);
+        self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, carry);
+        self.prefetch(self.pc.get());
+    }
+
+    fn rl<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
+        let value = operand.read(self);
+        let old_carry = if self.f.contains(Flags::C) { 0x01 } else { 0x00 };
+        let carry = value & 0x80 == 0x80;
+        let value = (value << 1) | old_carry;
+        operand.write(self, value);
+        self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, carry);
+        self.prefetch(self.pc.get());
+    }
+
+    fn rrc<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
+        let value = operand.read(self);
+        let carry = value & 0x01 == 0x01;
+        let bit_7 = if value & 0x80 == 0x80 { 0x80 } else { 0x00 };
+        let value = bit_7 | (value >> 1);
+        self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, carry);
+        self.prefetch(self.pc.get());
+    }
+
+    fn rr<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
+        let value = operand.read(self);
+        let old_carry = if self.f.contains(Flags::C) { 0b1000_0000 } else { 0x00 };
+        let carry = value & 0x01 == 0x01;
+        let value = (value >> 1) | old_carry;
+        self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, carry);
+        self.prefetch(self.pc.get());
+    }
+
     fn add_8<O: SrcOperand8>(&mut self, operand: O) {
         let old = self.a;
         let operand = operand.read(self);
@@ -1137,12 +1242,36 @@ impl Cpu {
     fn cp<A: SrcOperand8, B: SrcOperand8>(&mut self, a: A, b: B) {
         let a_value = a.read(self);
         let b_value = b.read(self);
-        print!(" CP {}, {}", a_value, b_value);
         let value = b_value.wrapping_sub(a_value);
         self.try_set_z(value);
         self.f.set(Flags::N, true);
         self.f.set(Flags::H, (a_value & 0xF) < (b_value & 0xF));
         self.f.set(Flags::C, a_value < b_value);
+        self.prefetch(self.pc.get());
+    }
+
+    fn sla<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
+        let value = operand.read(self);
+        let bit_7 = value & 0x80;
+        let value = value << 1;
+        operand.write(self, value);
+        self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, bit_7 == 0x80);
+        self.prefetch(self.pc.get());
+    }
+
+    fn sra<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
+        let value = operand.read(self);
+        let bit_0 = value & 0x01;
+        let bit_7 = value & 0x80;
+        let value = bit_7 | (value >> 1);
+        operand.write(self, value);
+        self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, bit_0 == 0x01);
         self.prefetch(self.pc.get());
     }
 
@@ -1159,6 +1288,18 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
+    fn srl<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
+        let value = operand.read(self);
+        let bit_0 = value & 0x01;
+        let value = value >> 1;
+        operand.write(self, value);
+        self.try_set_z(value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, false);
+        self.f.set(Flags::C, bit_0 == 0x01);
+        self.prefetch(self.pc.get());
+    }
+
     fn bit<O: SrcOperand8 + DstOperand8>(&mut self, bit: u8, operand: O) {
         let operand = operand.read(self);
         let bit = 1 << bit;
@@ -1166,6 +1307,7 @@ impl Cpu {
         self.f.set(Flags::Z, test == 0);
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, true);
+        self.prefetch(self.pc.get());
     }
 
     fn res<O: SrcOperand8 + DstOperand8>(&mut self, bit: u8, operand: O) {
