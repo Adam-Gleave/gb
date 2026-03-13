@@ -225,17 +225,6 @@ impl DstOperand8 for RegisterPtr {
 }
 
 #[derive(Clone, Copy)]
-pub struct SpE8;
-
-impl SrcOperand16 for SpE8 {
-    fn read(&self, cpu: &mut Cpu) -> u16 {
-        let addr = RegisterPair::SP.read(cpu);
-        let offset = cpu.fetch_imm8() as i8;
-        addr.wrapping_add(offset as u16)
-    }
-}
-
-#[derive(Clone, Copy)]
 pub enum Cond {
     Set(Flags),
     Clear(Flags),
@@ -331,7 +320,7 @@ impl Cpu {
             0x06 => self.load_8_8(Register::B, Imm8),
             0x07 => self.rlca(),
             0x08 => self.load_16_16(Addr16, RegisterPair::SP),
-            // 0x09 ADD 16
+            0x09 => self.add_16(RegisterPair::HL, RegisterPair::BC),
             0x0A => self.load_8_8(Register::A, RegisterPtr::BC),
             0x0B => self.dec_16(RegisterPair::BC),
             0x0C => self.inc_8(Register::C),
@@ -347,7 +336,7 @@ impl Cpu {
             0x16 => self.load_8_8(Register::D, Imm8),
             0x17 => self.rla(),
             0x18 => self.jr(),
-            // 0x19 ADD 16
+            0x19 => self.add_16(RegisterPair::HL, RegisterPair::DE),
             0x1A => self.load_8_8(Register::A, RegisterPtr::DE),
             0x1B => self.dec_16(RegisterPair::DE),
             0x1C => self.inc_8(Register::E),
@@ -361,9 +350,9 @@ impl Cpu {
             0x24 => self.inc_8(Register::H),
             0x25 => self.dec_8(Register::H),
             0x26 => self.load_8_8(Register::H, Imm8),
-            // 0x27 DAA
+            0x27 => self.daa(),
             0x28 => self.jr_cc(Cond::Set(Flags::Z)),
-            // 0x29 ADD 16
+            0x29 => self.add_16(RegisterPair::HL, RegisterPair::HL),
             0x2A => self.load_8_8(Register::A, RegisterPtr::HLI),
             0x2B => self.dec_16(RegisterPair::HL),
             0x2C => self.inc_8(Register::L),
@@ -379,7 +368,7 @@ impl Cpu {
             0x36 => self.load_8_8(RegisterPtr::HL, Imm8),
             0x37 => self.scf(),
             0x38 => self.jr_cc(Cond::Set(Flags::C)),
-            // 0x39 ADD 16
+            0x39 => self.add_16(RegisterPair::HL, RegisterPair::SP),
             0x3A => self.load_8_8(Register::A, RegisterPtr::HLD),
             0x3B => self.dec_16(RegisterPair::SP),
             0x3C => self.inc_8(Register::A),
@@ -554,7 +543,7 @@ impl Cpu {
             0xE5 => self.push(RegisterPair::HL),
             0xE6 => self.and(Imm8),
             0xE7 => self.rst(0x20),
-            // 0xE8 ADD SP e8
+            0xE8 => self.add_sp_e8(),
             0xE9 => self.jp(RegisterPair::HL),
             0xEA => self.load_8_8(Addr16, Register::A),
             // 0xEB illegal
@@ -563,15 +552,15 @@ impl Cpu {
             0xEE => self.xor(Imm8),
             0xEF => self.rst(0x28),
             0xF0 => self.load_8_8(Register::A, Ind8),
-            // 0xF1 POP AF
+            0xF1 => self.pop_af(),
             0xF2 => self.load_8_8(Register::A, RegisterPtr::C),
             0xF3 => self.di(),
             // 0xF4 illegal
             0xF5 => self.push(RegisterPair::AF),
             0xF6 => self.or(Imm8),
             0xF7 => self.rst(0x30),
-            0xF8 => self.load_16_16(RegisterPair::HL, SpE8), // TODO correct flags here
-            0xF9 => self.load_16_16(RegisterPair::HL, RegisterPair::SP),
+            0xF8 => self.load_hl_sp_e8(),
+            0xF9 => self.load_hl_sp(),
             0xFA => self.load_8_8(Register::A, Addr16),
             0xFB => self.ei(),
             // 0xFC illegal
@@ -909,6 +898,25 @@ impl Cpu {
         self.prefetch(self.pc.get());
     }
 
+    fn load_hl_sp_e8(&mut self) {
+        let sp = RegisterPair::SP.read(self);
+        let offset = Imm8.read(self) as i8;
+        let value = sp.wrapping_add(offset as u16);
+        RegisterPair::HL.write(self, value);
+        self.f.set(Flags::Z, false);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, (value & 0xF) < (sp & 0xF));
+        self.f.set(Flags::C, (value & 0xFF) < (sp & 0xFF));
+        self.cycle();
+        self.prefetch(self.pc.get());
+    }
+
+    fn load_hl_sp(&mut self) {
+        self.load_16_16(RegisterPair::HL, RegisterPair::SP);
+        self.cycle();
+        self.prefetch(self.pc.get());
+    }
+
     fn dec_8<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
         let value = operand.read(self);
         let result = value.wrapping_sub(1);
@@ -986,6 +994,32 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, carry);
+        self.prefetch(self.pc.get());
+    }
+
+    fn daa(&mut self) {
+        let mut adjustment: u8 = 0;
+        let value = if self.f.contains(Flags::N) {
+            if self.f.contains(Flags::H) {
+                adjustment = adjustment.wrapping_add(0x06);
+            }
+            if self.f.contains(Flags::C) {
+                adjustment = adjustment.wrapping_add(0x60);
+            }
+            self.a.wrapping_sub(adjustment)
+        } else {
+            if self.f.contains(Flags::H) || (self.a & 0x0F) > 0x09 {
+                adjustment = adjustment.wrapping_add(0x06);
+            }
+            if self.f.contains(Flags::C) || self.a > 0x99 {
+                adjustment = adjustment.wrapping_add(0x60);
+                self.f.set(Flags::C, true);
+            }
+            self.a.wrapping_add(adjustment)
+        };
+        self.a = value;
+        self.try_set_z(value);
+        self.f.set(Flags::H, false);
         self.prefetch(self.pc.get());
     }
 
@@ -1084,6 +1118,30 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, (operand & 0xF) + (old & 0xF) > 0xF);
         self.f.set(Flags::C, operand as u16 + old as u16 > 0xFF);
+        self.prefetch(self.pc.get());
+    }
+
+    fn add_16<A: SrcOperand16 + DstOperand16, B: SrcOperand16>(&mut self, a: A, b: B) {
+        let a_value = a.read(self);
+        let b_value = b.read(self);
+        let value = a_value.wrapping_add(b_value);
+        a.write(self, value);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, (a_value & 0xFFF) + (b_value & 0xFFF) > 0xFFF);
+        self.f.set(Flags::C, a_value as u32 + b_value as u32 > 0xFFFF);
+        self.cycle();
+        self.prefetch(self.pc.get());
+    }
+
+    fn add_sp_e8(&mut self) {
+        let a_value = RegisterPair::SP.read(self);
+        let b_value = Imm8.read(self) as i8;
+        let value = a_value.wrapping_add(b_value as u16);
+        RegisterPair::SP.write(self, value);
+        self.f.set(Flags::Z, false);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, (value & 0xF) < (a_value & 0xF));
+        self.f.set(Flags::C, (value & 0xFF) < (a_value & 0xFF));
         self.prefetch(self.pc.get());
     }
 
@@ -1226,6 +1284,16 @@ impl Cpu {
     fn pop<D: DstOperand16>(&mut self, dst: D) {
         let value = self.do_pop_16();
         dst.write(self, value);
+        self.prefetch(self.pc.get());
+    }
+
+    fn pop_af(&mut self) {
+        let value = self.do_pop_16();
+        let [lo, _] = value.to_le_bytes();
+        self.f.set(Flags::Z, lo & 0x80 == 0x80);
+        self.f.set(Flags::N, lo & 0b0100_0000 == 0b0100_0000);
+        self.f.set(Flags::H, lo & 0b0010_0000 == 0b0010_0000);
+        self.f.set(Flags::C, lo & 0xF == 0xF);
         self.prefetch(self.pc.get());
     }
 
