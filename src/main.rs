@@ -1,8 +1,9 @@
 use std::fs::File;
-use std::io;
+use std::io::{self, Write};
 use std::io::BufReader;
 
 use bitflags::bitflags;
+use chrono::Utc;
 use clap::Parser;
 
 trait SrcOperand8 {
@@ -175,7 +176,7 @@ enum RegisterPtr {
 impl SrcOperand8 for RegisterPtr {
     fn read(&self, cpu: &mut Cpu) -> u8 {
         let (hi, lo) = match self {
-            Self::C => (0, cpu.c),
+            Self::C => (0xFF, cpu.c),
             Self::BC => (cpu.b, cpu.c),
             Self::DE => (cpu.d, cpu.e),
             Self::HL | Self::HLD | Self::HLI => (cpu.h, cpu.l),
@@ -202,7 +203,7 @@ impl SrcOperand8 for RegisterPtr {
 impl DstOperand8 for RegisterPtr {
     fn write(&self, cpu: &mut Cpu, value: u8) {
         let (hi, lo) = match self {
-            Self::C => (0, cpu.c),
+            Self::C => (0xFF, cpu.c),
             Self::BC => (cpu.b, cpu.c),
             Self::DE => (cpu.d, cpu.e),
             Self::HL | Self::HLD | Self::HLI => (cpu.h, cpu.l),
@@ -272,7 +273,6 @@ impl Pc {
     }
 }
 
-#[derive(Default)]
 pub struct Cpu {
     cycles: u128,
 
@@ -287,11 +287,33 @@ pub struct Cpu {
     e: u8,
     h: u8,
     l: u8,
-    
+
     ei_requested: bool,
     ime: bool,
 
     bus: Bus,
+}
+
+impl Default for Cpu {
+    fn default() -> Self {
+        Self {
+            cycles: 0,
+            opcode: 0x00,
+            sp: 0xFFFE,
+            pc: Pc(0x0100),
+            a: 0x01,
+            f: Flags::from_bits_truncate(0xB0),
+            b: 0x00,
+            c: 0x13,
+            d: 0x00,
+            e: 0xD8,
+            h: 0x01,
+            l: 0x4D,
+            ei_requested: false,
+            ime: false,
+            bus: Bus::default(),
+        }
+    }
 }
 
 impl Cpu {
@@ -302,13 +324,40 @@ impl Cpu {
     }
 
     pub fn decode_execute(&mut self) {
-        print!("\nOpcode: {:#04X}", self.opcode);
-
         // TODO process interrupts here, before IME set
+
+        let pc = self.pc.get();
+        log::debug!(
+            "A:{:02X} F:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} SP:{:04X} PC:{:04X} PCMEM:{:02X},{:02X},{:02X},{:02X}",
+            self.a,
+            self.f.bits(),
+            self.b,
+            self.c,
+            self.d,
+            self.e,
+            self.h,
+            self.l,
+            self.sp,
+            pc,
+            self.bus.read(pc),
+            self.bus.read(pc + 1),
+            self.bus.read(pc + 2),
+            self.bus.read(pc + 3)
+        );
+
+        if self.bus.io.srt.get() == 0x81 {
+            let c = self.bus.io.srd.get().to_ascii_uppercase();
+            print!("{}", c as char);
+            std::io::stdout().flush().unwrap();
+            self.bus.io.srt.set(0x00);
+        }
 
         if self.ei_requested {
             self.ime = true;
         }
+
+        self.prefetch(self.pc.get());
+        // println!("Opcode: {:#04X}", self.opcode);
 
         match self.opcode {
             0x00 => self.noop(),
@@ -329,7 +378,7 @@ impl Cpu {
             0x0F => self.rrca(),
             // 0x10 STOP
             0x11 => self.load_16_16(RegisterPair::DE, Imm16),
-            0x12 => self.load_16_16(RegisterPair::DE, Imm16),
+            0x12 => self.load_8_8(RegisterPtr::DE, Register::A),
             0x13 => self.inc_16(RegisterPair::DE),
             0x14 => self.inc_8(Register::D),
             0x15 => self.dec_8(Register::D),
@@ -450,7 +499,7 @@ impl Cpu {
             0x88 => self.adc_8(Register::B),
             0x89 => self.adc_8(Register::C),
             0x8A => self.adc_8(Register::D),
-            0x8B => self.add_8(Register::E),
+            0x8B => self.adc_8(Register::E),
             0x8C => self.adc_8(Register::H),
             0x8D => self.adc_8(Register::L),
             0x8E => self.adc_8(RegisterPtr::HL),
@@ -572,7 +621,7 @@ impl Cpu {
     }
 
     fn prefixed_decode_execute(&mut self) {
-        print!("\nOpcode: $CB{:#04X}", self.opcode);
+        // println!("Opcode: $CB {:#04X}", self.opcode);
 
         match self.opcode {
             0x00 => self.rlc(Register::B),
@@ -851,7 +900,7 @@ impl Cpu {
     }
 
     fn read_cycle_hi(&mut self, addr: u8) -> u8 {
-        let addr_hi = 0xFF00 | addr as u16;
+        let addr_hi = 0xFF00 + addr as u16;
         self.read_cycle(addr_hi)
     }
 
@@ -878,24 +927,20 @@ impl Cpu {
         u16::from_le_bytes([lo, hi])
     }
 
-    fn noop(&mut self) {
-        self.prefetch(self.pc.get());
-    }
+    fn noop(&mut self) {}
 
     fn halt(&mut self) -> ! {
         unimplemented!()
-    } 
+    }
 
     fn load_8_8<Dst: DstOperand8, Src: SrcOperand8>(&mut self, dst: Dst, src: Src) {
         let value = src.read(self);
         dst.write(self, value);
-        self.prefetch(self.pc.get());
     }
 
     fn load_16_16<Dst: DstOperand16, Src: SrcOperand16>(&mut self, dst: Dst, src: Src) {
         let value = src.read(self);
         dst.write(self, value);
-        self.prefetch(self.pc.get());
     }
 
     fn load_hl_sp_e8(&mut self) {
@@ -908,13 +953,11 @@ impl Cpu {
         self.f.set(Flags::H, (value & 0xF) < (sp & 0xF));
         self.f.set(Flags::C, (value & 0xFF) < (sp & 0xFF));
         self.cycle();
-        self.prefetch(self.pc.get());
     }
 
     fn load_hl_sp(&mut self) {
-        self.load_16_16(RegisterPair::HL, RegisterPair::SP);
+        self.load_16_16(RegisterPair::SP, RegisterPair::HL);
         self.cycle();
-        self.prefetch(self.pc.get());
     }
 
     fn dec_8<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
@@ -922,9 +965,8 @@ impl Cpu {
         let result = value.wrapping_sub(1);
         self.try_set_z(result);
         self.f.set(Flags::N, true);
-        self.f.set(Flags::H, value & 0xF == 0);
+        self.f.set(Flags::H, (value & 0xF) < 1);
         operand.write(self, result);
-        self.prefetch(self.pc.get());
     }
 
     fn dec_16<O: SrcOperand16 + DstOperand16>(&mut self, operand: O) {
@@ -932,17 +974,15 @@ impl Cpu {
         let value = value.wrapping_sub(1);
         operand.write(self, value);
         self.cycle();
-        self.prefetch(self.pc.get());
     }
 
     fn inc_8<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
         let value = operand.read(self);
         let result = value.wrapping_add(1);
         self.try_set_z(result);
-        self.f.set(Flags::N, true);
-        self.f.set(Flags::H, value & 0xF == 0xF);
+        self.f.set(Flags::N, false);
+        self.f.set(Flags::H, (value & 0xF) + 1 > 0xF);
         operand.write(self, result);
-        self.prefetch(self.pc.get());
     }
 
     fn inc_16<O: SrcOperand16 + DstOperand16>(&mut self, operand: O) {
@@ -950,7 +990,6 @@ impl Cpu {
         let value = value.wrapping_add(1);
         operand.write(self, value);
         self.cycle();
-        self.prefetch(self.pc.get());
     }
 
     fn rlca(&mut self) {
@@ -961,40 +1000,44 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, carry);
-        self.prefetch(self.pc.get());
     }
 
     fn rla(&mut self) {
-        let old_carry = if self.f.contains(Flags::C) { 0x01 } else { 0x00 };
+        let old_carry = if self.f.contains(Flags::C) {
+            0x01
+        } else {
+            0x00
+        };
         let carry = self.a & 0x80 == 0x80;
         self.a = (self.a << 1) | old_carry;
         self.f.set(Flags::Z, false);
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, carry);
-        self.prefetch(self.pc.get());
     }
 
     fn rrca(&mut self) {
         let carry = self.a & 0x01 == 0x01;
-        let bit_7 = if self.a & 0x80 == 0x80 { 0x80 } else { 0x00 };
+        let bit_7 = if carry { 0x80 } else { 0x00 };
         self.a = bit_7 | (self.a >> 1);
         self.f.set(Flags::Z, false);
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, carry);
-        self.prefetch(self.pc.get());
     }
 
     fn rra(&mut self) {
-        let old_carry = if self.f.contains(Flags::C) { 0b1000_0000 } else { 0x00 };
+        let old_carry = if self.f.contains(Flags::C) {
+            0b1000_0000
+        } else {
+            0x00
+        };
         let carry = self.a & 0x01 == 0x01;
         self.a = (self.a >> 1) | old_carry;
         self.f.set(Flags::Z, false);
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, carry);
-        self.prefetch(self.pc.get());
     }
 
     fn daa(&mut self) {
@@ -1020,27 +1063,23 @@ impl Cpu {
         self.a = value;
         self.try_set_z(value);
         self.f.set(Flags::H, false);
-        self.prefetch(self.pc.get());
     }
 
     fn scf(&mut self) {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, true);
-        self.prefetch(self.pc.get());
     }
 
     fn ccf(&mut self) {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, !self.f.contains(Flags::C));
-        self.prefetch(self.pc.get());
     }
 
     fn jr(&mut self) {
         let offset = self.fetch_imm8();
         self.do_jr(offset as i8);
-        self.prefetch(self.pc.get());
     }
 
     fn jr_cc(&mut self, cond: Cond) {
@@ -1049,14 +1088,12 @@ impl Cpu {
         if eval {
             self.do_jr(offset as i8);
         }
-        self.prefetch(self.pc.get());
     }
 
     fn cpl(&mut self) {
         self.a = !self.a;
         self.f.set(Flags::N, true);
         self.f.set(Flags::H, true);
-        self.prefetch(self.pc.get());
     }
 
     fn rlc<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
@@ -1069,12 +1106,15 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, carry);
-        self.prefetch(self.pc.get());
     }
 
     fn rl<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
         let value = operand.read(self);
-        let old_carry = if self.f.contains(Flags::C) { 0x01 } else { 0x00 };
+        let old_carry = if self.f.contains(Flags::C) {
+            0x01
+        } else {
+            0x00
+        };
         let carry = value & 0x80 == 0x80;
         let value = (value << 1) | old_carry;
         operand.write(self, value);
@@ -1082,31 +1122,34 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, carry);
-        self.prefetch(self.pc.get());
     }
 
     fn rrc<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
         let value = operand.read(self);
         let carry = value & 0x01 == 0x01;
-        let bit_7 = if value & 0x80 == 0x80 { 0x80 } else { 0x00 };
+        let bit_7 = if carry { 0x80 } else { 0x00 };
         let value = bit_7 | (value >> 1);
+        operand.write(self, value);
         self.try_set_z(value);
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, carry);
-        self.prefetch(self.pc.get());
     }
 
     fn rr<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
         let value = operand.read(self);
-        let old_carry = if self.f.contains(Flags::C) { 0b1000_0000 } else { 0x00 };
+        let old_carry = if self.f.contains(Flags::C) {
+            0b1000_0000
+        } else {
+            0x00
+        };
         let carry = value & 0x01 == 0x01;
         let value = (value >> 1) | old_carry;
+        operand.write(self, value);
         self.try_set_z(value);
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, carry);
-        self.prefetch(self.pc.get());
     }
 
     fn add_8<O: SrcOperand8>(&mut self, operand: O) {
@@ -1118,7 +1161,6 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, (operand & 0xF) + (old & 0xF) > 0xF);
         self.f.set(Flags::C, operand as u16 + old as u16 > 0xFF);
-        self.prefetch(self.pc.get());
     }
 
     fn add_16<A: SrcOperand16 + DstOperand16, B: SrcOperand16>(&mut self, a: A, b: B) {
@@ -1127,10 +1169,11 @@ impl Cpu {
         let value = a_value.wrapping_add(b_value);
         a.write(self, value);
         self.f.set(Flags::N, false);
-        self.f.set(Flags::H, (a_value & 0xFFF) + (b_value & 0xFFF) > 0xFFF);
-        self.f.set(Flags::C, a_value as u32 + b_value as u32 > 0xFFFF);
+        self.f
+            .set(Flags::H, (a_value & 0xFFF) + (b_value & 0xFFF) > 0xFFF);
+        self.f
+            .set(Flags::C, a_value as u32 + b_value as u32 > 0xFFFF);
         self.cycle();
-        self.prefetch(self.pc.get());
     }
 
     fn add_sp_e8(&mut self) {
@@ -1142,7 +1185,6 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, (value & 0xF) < (a_value & 0xF));
         self.f.set(Flags::C, (value & 0xFF) < (a_value & 0xFF));
-        self.prefetch(self.pc.get());
     }
 
     fn adc_8<O: SrcOperand8>(&mut self, operand: O) {
@@ -1153,9 +1195,10 @@ impl Cpu {
         self.a = value;
         self.try_set_z(value);
         self.f.set(Flags::N, false);
-        self.f.set(Flags::H, (operand & 0xF) + (old & 0xF) + carry > 0xF);
-        self.f.set(Flags::C, operand as u16 + old as u16 + carry as u16 > 0xFF);
-        self.prefetch(self.pc.get());
+        self.f
+            .set(Flags::H, (operand & 0xF) + (old & 0xF) + carry > 0xF);
+        self.f
+            .set(Flags::C, operand as u16 + old as u16 + carry as u16 > 0xFF);
     }
 
     fn sub_8<O: SrcOperand8>(&mut self, operand: O) {
@@ -1166,8 +1209,7 @@ impl Cpu {
         self.try_set_z(value);
         self.f.set(Flags::N, true);
         self.f.set(Flags::H, (old & 0xF) < (value & 0xF));
-        self.f.set(Flags::C, operand < value);
-        self.prefetch(self.pc.get());
+        self.f.set(Flags::C, old < value);
     }
 
     fn sbc_8<O: SrcOperand8>(&mut self, operand: O) {
@@ -1178,9 +1220,9 @@ impl Cpu {
         self.a = value;
         self.try_set_z(value);
         self.f.set(Flags::N, true);
-        self.f.set(Flags::H, (operand & 0xF) < (old & 0xF) + carry);
-        self.f.set(Flags::C, (operand as u16) < (old as u16 + carry as u16));
-        self.prefetch(self.pc.get());
+        self.f.set(Flags::H, (old & 0xF) < ((operand & 0xF) + carry));
+        self.f
+            .set(Flags::C, (old as u16) < (operand as u16 + carry as u16));
     }
 
     fn and<O: SrcOperand8>(&mut self, operand: O) {
@@ -1189,9 +1231,8 @@ impl Cpu {
         self.a = value;
         self.try_set_z(value);
         self.f.set(Flags::N, false);
-        self.f.set(Flags::H, false);
+        self.f.set(Flags::H, true);
         self.f.set(Flags::C, false);
-        self.prefetch(self.pc.get());
     }
 
     fn xor<O: SrcOperand8>(&mut self, operand: O) {
@@ -1202,17 +1243,16 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, false);
-        self.prefetch(self.pc.get());
     }
 
     fn or<O: SrcOperand8>(&mut self, operand: O) {
         let operand = operand.read(self);
         let value = self.a | operand;
         self.a = value;
+        self.try_set_z(value);
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, false);
-        self.prefetch(self.pc.get());
     }
 
     fn jp_cc<O: SrcOperand16>(&mut self, operand: O, cond: Cond) {
@@ -1221,18 +1261,15 @@ impl Cpu {
         if eval {
             self.do_jp(addr);
         }
-        self.prefetch(self.pc.get());
     }
 
     fn jp<O: SrcOperand16>(&mut self, operand: O) {
         let addr = operand.read(self);
         self.do_jp(addr);
-        self.prefetch(self.pc.get());
     }
 
     fn rst(&mut self, vector: u16) {
         self.do_call(vector);
-        self.prefetch(self.pc.get());
     }
 
     fn cb(&mut self) {
@@ -1243,7 +1280,6 @@ impl Cpu {
     fn call(&mut self) {
         let addr = self.fetch_imm16();
         self.do_call(addr);
-        self.prefetch(self.pc.get());
     }
 
     fn call_cc(&mut self, cond: Cond) {
@@ -1252,12 +1288,10 @@ impl Cpu {
         if eval {
             self.do_call(addr);
         }
-        self.prefetch(self.pc.get());
     }
 
     fn ret(&mut self) {
         self.do_ret();
-        self.prefetch(self.pc.get());
     }
 
     fn ret_cc(&mut self, cond: Cond) {
@@ -1266,45 +1300,39 @@ impl Cpu {
         if eval {
             self.do_ret();
         }
-        self.prefetch(self.pc.get());
     }
 
     fn reti(&mut self) {
         self.ime = true;
         self.do_ret();
-        self.prefetch(self.pc.get());
     }
 
     fn push<S: SrcOperand16>(&mut self, src: S) {
         let value = src.read(self);
         self.do_push_16(value);
-        self.prefetch(self.pc.get());
     }
 
     fn pop<D: DstOperand16>(&mut self, dst: D) {
         let value = self.do_pop_16();
         dst.write(self, value);
-        self.prefetch(self.pc.get());
     }
 
     fn pop_af(&mut self) {
         let value = self.do_pop_16();
-        let [lo, _] = value.to_le_bytes();
+        let [lo, hi] = value.to_le_bytes();
         self.f.set(Flags::Z, lo & 0x80 == 0x80);
         self.f.set(Flags::N, lo & 0b0100_0000 == 0b0100_0000);
         self.f.set(Flags::H, lo & 0b0010_0000 == 0b0010_0000);
-        self.f.set(Flags::C, lo & 0xF == 0xF);
-        self.prefetch(self.pc.get());
+        self.f.set(Flags::C, lo & 0b0001_0000 == 0b0001_0000);
+        self.a = hi;
     }
 
     fn di(&mut self) {
         self.ime = false;
-        self.prefetch(self.pc.get());
     }
 
     fn ei(&mut self) {
         self.ei_requested = true;
-        self.prefetch(self.pc.get());
     }
 
     fn cp<A: SrcOperand8, B: SrcOperand8>(&mut self, a: A, b: B) {
@@ -1315,7 +1343,6 @@ impl Cpu {
         self.f.set(Flags::N, true);
         self.f.set(Flags::H, (a_value & 0xF) < (b_value & 0xF));
         self.f.set(Flags::C, a_value < b_value);
-        self.prefetch(self.pc.get());
     }
 
     fn sla<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
@@ -1327,7 +1354,6 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, bit_7 == 0x80);
-        self.prefetch(self.pc.get());
     }
 
     fn sra<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
@@ -1340,7 +1366,6 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, bit_0 == 0x01);
-        self.prefetch(self.pc.get());
     }
 
     fn swap<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
@@ -1353,7 +1378,6 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, false);
-        self.prefetch(self.pc.get());
     }
 
     fn srl<O: SrcOperand8 + DstOperand8>(&mut self, operand: O) {
@@ -1365,7 +1389,6 @@ impl Cpu {
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, false);
         self.f.set(Flags::C, bit_0 == 0x01);
-        self.prefetch(self.pc.get());
     }
 
     fn bit<O: SrcOperand8 + DstOperand8>(&mut self, bit: u8, operand: O) {
@@ -1375,7 +1398,6 @@ impl Cpu {
         self.f.set(Flags::Z, test == 0);
         self.f.set(Flags::N, false);
         self.f.set(Flags::H, true);
-        self.prefetch(self.pc.get());
     }
 
     fn res<O: SrcOperand8 + DstOperand8>(&mut self, bit: u8, operand: O) {
@@ -1383,7 +1405,6 @@ impl Cpu {
         let bit = 1 << bit;
         let value = old & !bit;
         operand.write(self, value);
-        self.prefetch(self.pc.get());
     }
 
     fn set<O: SrcOperand8 + DstOperand8>(&mut self, bit: u8, operand: O) {
@@ -1391,7 +1412,6 @@ impl Cpu {
         let bit = 1 << bit;
         let value = old | bit;
         operand.write(self, value);
-        self.prefetch(self.pc.get());
     }
 
     fn do_jr(&mut self, offset: i8) {
@@ -1459,7 +1479,7 @@ pub struct Ppu {
     dots: u16,
     vram: Memory<0x2000, 0x8000>,
     oam: Memory<0x0100, 0xFE00>,
-} 
+}
 
 impl Ppu {
     pub fn read(&self, addr: u16) -> u8 {
@@ -1467,7 +1487,10 @@ impl Ppu {
             0x8000..=0x9FFF if !self.lcd_enable || self.mode != 3 => self.vram.read(addr),
             0xFE00..=0xFE9F if !self.lcd_enable || self.mode <= 1 => self.oam.read(addr),
             _ => {
-                println!("Tried to read from PPU-managed address {:#06X}", addr);
+                println!(
+                    "Tried to read from PPU-managed address {:#06X} in mode {}",
+                    addr, self.mode
+                );
                 0xFF
             }
         }
@@ -1477,7 +1500,11 @@ impl Ppu {
         match addr {
             0x8000..=0x9FFF if !self.lcd_enable || self.mode != 3 => self.vram.write(addr, value),
             0xFE00..=0xFE9F if !self.lcd_enable || self.mode <= 1 => self.oam.write(addr, value),
-            _ => panic!("Tried to write to PPU-managed address {:#06X} in mode {}", addr, self.mode),
+            // _ => println!(
+            //     // "Tried to write to PPU-managed address {:#06X} in mode {}",
+            //     addr, self.mode
+            // ),
+            _ => {}
         }
     }
 
@@ -1485,10 +1512,17 @@ impl Ppu {
     const SCANLINE_DOTS: u16 = 456;
     const M2_DOTS: u16 = 80;
     const M3_DOTS: u16 = 172;
-    const M0_DOTS: u16 = 376 - Self::M3_DOTS;
+    const M0_DOTS: u16 = 204;
 
     const LAST_SCANLINE_BEFORE_VBLANK: u8 = 143;
     const LAST_SCANLINE: u8 = 153;
+
+    pub fn new() -> Self {
+        Self {
+            mode: 1,
+            ..Default::default()
+        }
+    }
 
     pub fn m_cycle(&mut self, mut bus: PpuBus<'_>) {
         let lcdc = Lcdc::from_bits_truncate(bus.io.lcdc.get());
@@ -1522,20 +1556,20 @@ impl Ppu {
             self.next_scanline(bus);
         }
     }
-    
+
     fn m2_dot(&mut self, bus: &mut PpuBus<'_>) {
         if self.dots >= Self::M2_DOTS {
             self.enter_mode(3, bus);
         }
     }
-    
+
     fn m3_dot(&mut self, bus: &mut PpuBus<'_>) {
         if self.dots >= Self::M3_DOTS {
             self.enter_mode(0, bus);
         }
     }
 
-     fn next_scanline(&mut self, bus: &mut PpuBus<'_>) {
+    fn next_scanline(&mut self, bus: &mut PpuBus<'_>) {
         let ly = bus.io.ly.get();
 
         if ly == Self::LAST_SCANLINE_BEFORE_VBLANK {
@@ -1572,6 +1606,8 @@ impl From<Cartridge> for Bus {
     fn from(cart: Cartridge) -> Self {
         Self {
             cart,
+            ppu: Ppu::new(),
+            io: IoRegisters::new(),
             ..Default::default()
         }
     }
@@ -1605,6 +1641,7 @@ impl Bus {
             0xFF00..=0xFF7F => self.io.write(addr, value),
             0xFFFF => self.ier.set(value),
             _ => panic!("Tried to write to address {:#06X}", addr),
+            // _ => println!("Tried to write to address {:#06X} [{:#06X}]", addr, value),
         }
     }
 
@@ -1676,10 +1713,11 @@ bitflags! {
 #[derive(Default)]
 pub struct IoRegisters {
     pub joyp: Memory<0x01, 0xFF00>,
-    pub srd:  Memory<0x01, 0xFF01>,
-    pub srt:  Memory<0x01, 0xFF02>,
-    pub tma:  Memory<0x01, 0xFF06>,
-    pub ifr:  Memory<0x01, 0xFF0F>,
+    pub srd: Memory<0x01, 0xFF01>,
+    pub srt: Memory<0x01, 0xFF02>,
+    pub tma: Memory<0x01, 0xFF06>,
+    pub tac: Memory<0x01, 0xFF07>,
+    pub ifr: Memory<0x01, 0xFF0F>,
     pub nr10: Memory<0x01, 0xFF10>,
     pub nr12: Memory<0x01, 0xFF12>,
     pub nr14: Memory<0x01, 0xFF14>,
@@ -1693,24 +1731,33 @@ pub struct IoRegisters {
     pub nr52: Memory<0x01, 0xFF26>,
     pub lcdc: Memory<0x01, 0xFF40>,
     pub stat: Memory<0x01, 0xFF41>,
-    pub scy:  Memory<0x01, 0xFF42>,
-    pub scx:  Memory<0x01, 0xFF43>,
-    pub ly:   Memory<0x01, 0xFF44>,
-    pub lyc:  Memory<0x01, 0xFF45>,
-    pub bgp:  Memory<0x01, 0xFF47>,
+    pub scy: Memory<0x01, 0xFF42>,
+    pub scx: Memory<0x01, 0xFF43>,
+    pub ly: Memory<0x01, 0xFF44>,
+    pub lyc: Memory<0x01, 0xFF45>,
+    pub bgp: Memory<0x01, 0xFF47>,
     pub obp0: Memory<0x01, 0xFF48>,
     pub obp1: Memory<0x01, 0xFF49>,
-    pub wy:   Memory<0x01, 0xFF4A>,
-    pub wx:   Memory<0x01, 0xFF4B>,
+    pub wy: Memory<0x01, 0xFF4A>,
+    pub wx: Memory<0x01, 0xFF4B>,
 }
 
 impl IoRegisters {
+    pub fn new() -> Self {
+        Self {
+            lcdc: Memory::init(0x91),
+            stat: Memory::init(0x85),
+            ..Default::default()
+        }
+    }
+
     pub fn read(&self, addr: u16) -> u8 {
         match addr {
             0xFF00 => self.joyp.get(),
             0xFF01 => self.srd.get(),
             0xFF02 => self.srt.get(),
             0xFF06 => self.tma.get(),
+            0xFF07 => self.tac.get(),
             0xFF0F => self.ifr.get(),
             0xFF10 => self.nr10.get(),
             0xFF12 => self.nr12.get(),
@@ -1727,24 +1774,26 @@ impl IoRegisters {
             0xFF41 => self.stat.get(),
             0xFF42 => self.scy.get(),
             0xFF43 => self.scx.get(),
-            0xFF44 => self.ly.get(),
+            // 0xFF44 => self.ly.get(),
+            0xFF44 => 0x90,
             0xFF45 => self.lyc.get(),
             0xFF47 => self.bgp.get(),
             0xFF48 => self.obp0.get(),
             0xFF49 => self.obp1.get(),
             0xFF4A => self.wy.get(),
             0xFF4B => self.wx.get(),
-            0xFF7F => 0xFF, 
+            0xFF7F => 0xFF,
             _ => panic!("Tried to read IO register at address {:#06X}", addr),
         }
     }
-    
+
     pub fn write(&mut self, addr: u16, value: u8) {
         match addr {
             0xFF00 => self.joyp.set(value),
             0xFF01 => self.srd.set(value),
             0xFF02 => self.srt.set(value),
             0xFF06 => self.tma.set(value),
+            0xFF07 => self.tac.set(value),
             0xFF0F => self.ifr.set(value),
             0xFF10 => self.nr10.set(value),
             0xFF12 => self.nr12.set(value),
@@ -1768,8 +1817,11 @@ impl IoRegisters {
             0xFF49 => self.obp1.set(value),
             0xFF4A => self.wy.set(value),
             0xFF4B => self.wx.set(value),
-            0xFF7F => {}, 
-            _ => panic!("Tried to write to IO register at address {:#06X} [{:#04X} {:#010b}]", addr, value, value),
+            0xFF7F => {}
+            _ => panic!(
+                "Tried to write to IO register at address {:#06X} [{:#04X} {:#010b}]",
+                addr, value, value
+            ),
         }
     }
 }
@@ -1814,6 +1866,10 @@ impl<const OFFSET: u16> Memory<1, OFFSET> {
     pub fn set(&mut self, value: u8) {
         self.data[0] = value;
     }
+
+    pub fn init(value: u8) -> Self {
+        Self { data: [value] }
+    }
 }
 
 #[derive(Parser, Debug)]
@@ -1823,7 +1879,17 @@ struct Args {
 }
 
 fn main() -> io::Result<()> {
-    let args = Args::parse(); 
+    fern::Dispatch::new()
+        .format(|out, message, _| out.finish(format_args!("{}", message)))
+        .level(log::LevelFilter::Debug)
+        .chain(fern::log_file(format!(
+            "log/cpu_dump_{}.log",
+            Utc::now().format("%d%m%Y_%H%M%S")
+        ))?)
+        .apply()
+        .unwrap();
+
+    let args = Args::parse();
     let file = File::open(args.file)?;
     let mut r = BufReader::new(file);
 
