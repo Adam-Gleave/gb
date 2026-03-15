@@ -37,6 +37,7 @@ fn main() -> io::Result<()> {
 
     let mut cpu = Cpu::default();
     cpu.load_cart(Cartridge::new(&mut r)?);
+    cpu.log_state();
 
     loop {
         cpu.step();

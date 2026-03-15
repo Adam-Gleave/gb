@@ -68,7 +68,6 @@ impl Cpu {
     }
 
     pub fn step(&mut self) {
-        self.log_state();
         self.handle_ei_request();
 
         if self.handle_interrupt() {
@@ -78,9 +77,11 @@ impl Cpu {
         self.print_serial();
         self.fetch_opcode(self.pc);
         self.decode_execute();
+
+        self.log_state();
     }
 
-    fn log_state(&self) {
+    pub fn log_state(&self) {
         log::debug!(
             "A:{:02X} F:{:02X} B:{:02X} C:{:02X} D:{:02X} E:{:02X} H:{:02X} L:{:02X} SP:{:04X} PC:{:04X} PCMEM:{:02X},{:02X},{:02X},{:02X}",
             self.a,
@@ -102,6 +103,7 @@ impl Cpu {
 
     fn handle_ei_request(&mut self) {
         if self.ei_requested {
+            self.ei_requested = false;
             self.ime = true;
         }
     }
