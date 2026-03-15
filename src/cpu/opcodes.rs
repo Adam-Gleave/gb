@@ -16,7 +16,7 @@ use crate::cpu::operands::SrcOperand16;
 impl Cpu {
     pub(super) fn decode_execute(&mut self) {
         match self.opcode {
-            0x00 => self.noop(),
+            0x00 => self.nop(),
             0x01 => self.load_16_16(RegisterPair::BC, Imm16),
             0x02 => self.load_8_8(RegisterPtr::BC, Register::A),
             0x03 => self.inc_16(RegisterPair::BC),
@@ -537,7 +537,7 @@ impl Cpu {
         }
     }
 
-    fn noop(&mut self) {}
+    pub(super) fn nop(&mut self) {}
 
     fn halt(&mut self) -> ! {
         unimplemented!()
@@ -1036,7 +1036,7 @@ impl Cpu {
         self.cycle();
     }
 
-    fn do_call(&mut self, addr: u16) {
+    pub(super) fn do_call(&mut self, addr: u16) {
         self.do_push_16(self.pc);
         self.pc = addr;
     }

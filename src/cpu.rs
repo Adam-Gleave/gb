@@ -1,3 +1,4 @@
+mod interrupts;
 mod opcodes;
 mod operands;
 
@@ -69,6 +70,11 @@ impl Cpu {
     pub fn step(&mut self) {
         self.log_state();
         self.handle_ei_request();
+
+        if self.handle_interrupt() {
+            return;
+        }
+
         self.print_serial();
         self.fetch_opcode(self.pc);
         self.decode_execute();
