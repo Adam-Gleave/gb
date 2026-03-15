@@ -6,6 +6,7 @@ use std::io::Write;
 
 use bitflags::bitflags;
 
+pub use interrupts::Interrupts;
 use crate::Bus;
 use crate::Cartridge;
 
@@ -20,6 +21,7 @@ bitflags! {
 }
 
 pub struct Cpu {
+    halted: bool,
     cycles: u128,
     opcode: u8,
     sp: u16,
@@ -40,6 +42,7 @@ pub struct Cpu {
 impl Default for Cpu {
     fn default() -> Self {
         Self {
+            halted: false,
             cycles: 0,
             opcode: 0x00,
             sp: 0xFFFE,
@@ -68,6 +71,12 @@ impl Cpu {
     }
 
     pub fn step(&mut self) {
+        if self.halted {
+            self.cycle();
+            self.handle_interrupt();
+            return;
+        }
+
         self.handle_ei_request();
 
         if self.handle_interrupt() {

@@ -6,6 +6,7 @@ pub use self::memory::Memory;
 
 use crate::Cartridge;
 use crate::ppu::Ppu;
+use crate::timer::Timer;
 
 #[derive(Default)]
 pub struct Bus {
@@ -15,6 +16,7 @@ pub struct Bus {
     pub hram: Memory<0x007F, 0xFF80>,
     pub io: IoRegisters,
     pub ier: Memory<0x0001, 0xFFFF>,
+    pub timer: Timer,
 }
 
 impl From<Cartridge> for Bus {
@@ -62,9 +64,14 @@ impl Bus {
 
     pub fn sync(&mut self) {
         self.ppu.m_cycle(PpuBus { io: &mut self.io });
+        self.timer.m_cycle(TimerBus { io: &mut self.io });
     }
 }
 
 pub struct PpuBus<'a> {
+    pub io: &'a mut IoRegisters,
+}
+
+pub struct TimerBus<'a> {
     pub io: &'a mut IoRegisters,
 }

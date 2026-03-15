@@ -14,16 +14,22 @@ bitflags! {
 
 impl Cpu {
     pub(super) fn handle_interrupt(&mut self) -> bool {
-        if !self.ime {
+        if !self.ime && !self.halted {
             return false;
         }
 
         let ier = self.bus.ier.get();
         let ifr = self.bus.io.ifr.get();
-        let requests = Interrupts::from_bits_truncate(ier & ifr);
+        let requests = Interrupts::from_bits_truncate(ier & ifr & 0x1F);
         
         let mut request_handled = false;
         let mut do_isr = |flag: Interrupts, addr: u16| {
+            self.halted = false;
+
+            if !self.ime {
+                return;
+            }
+
             self.ime = false;
 
             let ifr = self.bus.io.ifr.get();

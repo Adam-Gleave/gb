@@ -539,8 +539,8 @@ impl Cpu {
 
     pub(super) fn nop(&mut self) {}
 
-    fn halt(&mut self) -> ! {
-        unimplemented!()
+    fn halt(&mut self) {
+        self.halted = true;
     }
 
     fn load_8_8<Dst: DstOperand8, Src: SrcOperand8>(&mut self, dst: Dst, src: Src) {

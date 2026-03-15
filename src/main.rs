@@ -2,6 +2,7 @@ mod bus;
 mod cart;
 mod cpu;
 mod ppu;
+mod timer;
 
 use std::fs::File;
 use std::io;
