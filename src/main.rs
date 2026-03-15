@@ -1,6 +1,6 @@
 use std::fs::File;
-use std::io::{self, Write};
 use std::io::BufReader;
+use std::io::{self, Write};
 
 use bitflags::bitflags;
 use chrono::Utc;
@@ -25,7 +25,6 @@ trait DstOperand16 {
 #[derive(Clone, Copy, Debug)]
 enum Register {
     A,
-    F,
     B,
     C,
     D,
@@ -38,7 +37,6 @@ impl SrcOperand8 for Register {
     fn read(&self, cpu: &mut Cpu) -> u8 {
         match self {
             Self::A => cpu.a,
-            Self::F => cpu.f.bits(),
             Self::B => cpu.b,
             Self::C => cpu.c,
             Self::D => cpu.d,
@@ -53,7 +51,6 @@ impl DstOperand8 for Register {
     fn write(&self, cpu: &mut Cpu, value: u8) {
         match self {
             Self::A => cpu.a = value,
-            Self::F => cpu.f = Flags::from_bits_truncate(value),
             Self::B => cpu.b = value,
             Self::C => cpu.c = value,
             Self::D => cpu.d = value,
@@ -1220,7 +1217,8 @@ impl Cpu {
         self.a = value;
         self.try_set_z(value);
         self.f.set(Flags::N, true);
-        self.f.set(Flags::H, (old & 0xF) < ((operand & 0xF) + carry));
+        self.f
+            .set(Flags::H, (old & 0xF) < ((operand & 0xF) + carry));
         self.f
             .set(Flags::C, (old as u16) < (operand as u16 + carry as u16));
     }
