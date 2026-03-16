@@ -26,8 +26,8 @@ impl Serial {
     fn idle_cycle(self, srt_memory: u8, bus: SerialBus<'_>) -> Self {
         let srt = bus.io.srt.get();
         if srt_memory & 0x80 == 0x00 && srt & 0x80 != 0x00 {
-            self.print(bus);
-            Serial::TransferInProgress { cycles: 0 }
+            self.print(&bus);
+            self.transfer_cycle(0, bus)
         } else {
             Serial::Idle { srt_memory: srt }
         }
@@ -40,7 +40,7 @@ impl Serial {
         bus.io.srd.set(srd << 1);
 
         let cycles = cycles + 1;
-        if cycles > Self::TRANSFER_CYCLES {
+        if cycles > Serial::TRANSFER_CYCLES {
             let ifr = bus.io.ifr.get() | Interrupts::SERIAL.bits();
             bus.io.ifr.set(ifr);
 
@@ -53,7 +53,7 @@ impl Serial {
         }
     }
 
-    fn print(&self, bus: SerialBus<'_>) {
+    fn print(&self, bus: &SerialBus<'_>) {
         let c = bus.io.srd.get().to_ascii_uppercase();
         print!("{}", c as char);
         std::io::stdout().flush().unwrap();

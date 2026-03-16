@@ -1,6 +1,8 @@
+mod dma;
 mod io;
 mod memory;
 
+use self::dma::Dma;
 pub use self::io::IoRegisters;
 pub use self::memory::Memory;
 
@@ -19,6 +21,7 @@ pub struct Bus {
     pub ier: Memory<0x0001, 0xFFFF>,
     pub timer: Timer,
     pub serial: Serial,
+    pub dma: Dma,
 }
 
 impl From<Cartridge> for Bus {
@@ -65,9 +68,10 @@ impl Bus {
     }
 
     pub fn sync(&mut self) {
-        self.ppu.m_cycle(PpuBus { io: &mut self.io });
         self.timer.m_cycle(TimerBus { io: &mut self.io });
+        self.dma_m_cycle();
         self.serial.m_cycle(SerialBus { io: &mut self.io });
+        self.ppu.m_cycle(PpuBus { io: &mut self.io });
     }
 }
 
