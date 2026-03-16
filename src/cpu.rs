@@ -2,13 +2,11 @@ mod interrupts;
 mod opcodes;
 mod operands;
 
-use std::io::Write;
-
 use bitflags::bitflags;
 
-pub use interrupts::Interrupts;
 use crate::Bus;
 use crate::Cartridge;
+pub use interrupts::Interrupts;
 
 bitflags! {
     #[derive(Default, Clone, Copy)]
@@ -83,7 +81,6 @@ impl Cpu {
             return;
         }
 
-        self.print_serial();
         self.fetch_opcode(self.pc);
         self.decode_execute();
 
@@ -114,16 +111,6 @@ impl Cpu {
         if self.ei_requested {
             self.ei_requested = false;
             self.ime = true;
-        }
-    }
-
-    fn print_serial(&mut self) {
-        // TODO proper serial handling, this is just for debugging test roms
-        if self.bus.io.srt.get() == 0x81 {
-            let c = self.bus.io.srd.get().to_ascii_uppercase();
-            print!("{}", c as char);
-            std::io::stdout().flush().unwrap();
-            self.bus.io.srt.set(0x00);
         }
     }
 

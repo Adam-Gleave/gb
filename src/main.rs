@@ -2,6 +2,7 @@ mod bus;
 mod cart;
 mod cpu;
 mod ppu;
+mod serial;
 mod timer;
 
 use std::fs::File;
@@ -22,6 +23,7 @@ struct Args {
 }
 
 fn main() -> io::Result<()> {
+    let _ = std::fs::create_dir("log");
     fern::Dispatch::new()
         .format(|out, message, _| out.finish(format_args!("{}", message)))
         .level(log::LevelFilter::Debug)
